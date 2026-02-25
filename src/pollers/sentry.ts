@@ -1,48 +1,5 @@
 import axios from "axios";
-
-interface SentryIssue {
-  id: string;
-  title: string;
-  culprit: string;
-  shortId: string;
-  count: string;
-  permalink: string;
-  metadata: {
-    type?: string;
-    function?: string;
-  };
-}
-
-interface SentryEvent {
-  entries?: Array<{
-    type: string;
-    data: {
-      values?: Array<{
-        type: string;
-        value: string;
-        stacktrace?: {
-          frames: Array<{
-            filename: string;
-            function: string;
-            lineNo: number;
-          }>;
-        };
-      }>;
-    };
-  }>;
-}
-
-export interface SentryAlert {
-  type: "sentry";
-  issueId: string;
-  shortId: string;
-  title: string;
-  function: string;
-  count: number;
-  link: string;
-  stackTrace?: string;
-  errorType?: string;
-}
+import type { SentryAlert, SentryIssue, SentryEvent } from "../types.js";
 
 async function getLatestEvent(
   authToken: string,
@@ -59,20 +16,22 @@ async function getLatestEvent(
     );
     return response.data[0] || null;
   } catch (error) {
-    console.error(`Error fetching event for issue ${issueId}:`, error);
+    console.error(`[nomie-sre] Error fetching event for issue ${issueId}:`, error);
     return null;
   }
 }
 
 function extractStackTrace(event: SentryEvent): string | undefined {
-  for (const entry of event.entries || []) {
+  if (!event.entries) return undefined;
+
+  for (const entry of event.entries) {
     if (entry.type === "exception" && entry.data.values) {
-      const frames = entry.data.values[0]?.stacktrace?.frames;
-      if (frames) {
+      const exc = entry.data.values[0];
+      if (exc?.stacktrace?.frames) {
+        // Get the last 3 frames (most relevant)
+        const frames = exc.stacktrace.frames.slice(-3).reverse();
         return frames
-          .slice(-3)
-          .reverse()
-          .map(f => `  at ${f.function || "?"} (${f.filename}:${f.lineNo})`)
+          .map((f) => `  at ${f.function || "?"} (${f.filename}:${f.lineNo})`)
           .join("\n");
       }
     }
@@ -90,6 +49,7 @@ export async function pollSentry(
   const seenSet = new Set(seenIssueIds);
 
   try {
+    // Get unresolved issues
     const response = await axios.get<SentryIssue[]>(
       `https://sentry.io/api/0/projects/${org}/${project}/issues/`,
       {
@@ -99,9 +59,20 @@ export async function pollSentry(
     );
 
     for (const issue of response.data) {
+      // Skip already-seen issues
       if (seenSet.has(issue.id)) continue;
 
+      // Fetch latest event for richer context
       const event = await getLatestEvent(authToken, org, issue.id);
+      const stackTrace = event ? extractStackTrace(event) : undefined;
+
+      // Extract tags as object
+      const tags: Record<string, string> = {};
+      if (issue.tags) {
+        for (const tag of issue.tags) {
+          tags[tag.key] = tag.value;
+        }
+      }
 
       alerts.push({
         type: "sentry",
@@ -111,14 +82,19 @@ export async function pollSentry(
         function: issue.culprit || issue.metadata?.function || "unknown",
         count: parseInt(issue.count, 10),
         link: issue.permalink,
-        stackTrace: event ? extractStackTrace(event) : undefined,
+        firstSeen: issue.firstSeen,
+        lastSeen: issue.lastSeen,
+        stackTrace,
+        filename: issue.metadata?.filename,
         errorType: issue.metadata?.type,
+        tags,
       });
 
-      await new Promise(r => setTimeout(r, 100));
+      // Small delay to avoid rate limiting
+      await new Promise((r) => setTimeout(r, 100));
     }
   } catch (error) {
-    console.error("Sentry poll error:", error);
+    console.error("[nomie-sre] Sentry poll error:", error);
   }
 
   return alerts;

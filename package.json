@@ -1,22 +1,14 @@
 {
-  "name": "nomie-sre",
+  "name": "@clawdbot/nomie-sre",
   "version": "1.0.0",
   "type": "module",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "poll": "node dist/index.js poll",
-    "status": "node dist/index.js status",
-    "test-alert": "node dist/index.js test"
-  },
+  "main": "index.ts",
   "dependencies": {
-    "@aws-sdk/client-cloudwatch": "^3.600.0",
-    "axios": "^1.7.0",
-    "dotenv": "^17.2.3"
+    "@aws-sdk/client-cloudwatch": "^3.450.0",
+    "axios": "^1.6.0"
   },
   "devDependencies": {
-    "@types/node": "^20.0.0",
-    "bun-types": "^1.3.7",
-    "typescript": "^5.4.0"
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3"
   }
 }
