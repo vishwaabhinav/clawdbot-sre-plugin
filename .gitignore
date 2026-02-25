@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.env
+logs/
+*.db
+state.json
+bun.lock
+package-lock.json
