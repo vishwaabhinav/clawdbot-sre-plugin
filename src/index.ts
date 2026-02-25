@@ -5,11 +5,10 @@ import { loadState, saveState } from "./state.js";
 import { findSimilarIssues, formatSuggestion } from "./memory.js";
 import { getTask, createTask, updateTask, getStaleInvestigating, getAllOpenTasks } from "./state/tasks.js";
 import { spawnClaudeCode, generateBranch, spawnFeedbackFix } from "./fixer/spawner.js";
-import { sendPRNotification, sendFailureNotification, sendFeedbackNotification } from "./telegram/buttons.js";
+import { sendPRNotification, sendFailureNotification, sendFeedbackNotification, sendMessage } from "./telegram/buttons.js";
 import { pullLatest } from "./github/pr.js";
 import { getUnresolvedThreads, replyToThread, getOpenBotPRs } from "./github/comments.js";
 import { runDaemon } from "./daemon.js";
-import axios from "axios";
 
 // Environment variables
 const SENTRY_AUTH_TOKEN = process.env.SENTRY_AUTH_TOKEN || "";
@@ -17,8 +16,6 @@ const SENTRY_ORG = process.env.SENTRY_ORG || "";
 const SENTRY_PROJECT = process.env.SENTRY_PROJECT || "";
 const POSTHOG_API_KEY = process.env.POSTHOG_API_KEY || "";
 const POSTHOG_PROJECT_ID = process.env.POSTHOG_PROJECT_ID || "";
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
 const AUTO_FIX_ENABLED = process.env.AUTO_FIX_ENABLED !== "false";
 
 // Rate limiting for feedback attempts
@@ -60,35 +57,12 @@ function formatAlert(alert: Alert): string {
   }
 }
 
-async function sendTelegramMessage(message: string): Promise<void> {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.log("Telegram not configured, would send:", message);
-    return;
-  }
-  try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: message,
-      parse_mode: "Markdown",
-      disable_web_page_preview: true,
-    });
-  } catch (error: any) {
-    if (error?.response?.status === 400) {
-      await axios.post(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-        chat_id: TELEGRAM_CHAT_ID,
-        text: message.replace(/[*`_\[\]()]/g, ""),
-        disable_web_page_preview: true,
-      });
-    } else throw error;
-  }
-}
-
 async function attemptAutoFix(alert: SentryAlert): Promise<void> {
   console.log(`\n[AutoFix] Attempting fix for ${alert.shortId}...`);
 
   const existingTask = getTask(alert.issueId);
   if (existingTask) {
-    if (["investigating", "pr_open", "merged"].includes(existingTask.state)) {
+    if (["pr_open", "merged"].includes(existingTask.state)) {
       console.log(`[AutoFix] Skipping ${alert.shortId}: already ${existingTask.state}`);
       return;
     }
@@ -254,7 +228,6 @@ async function poll(): Promise<void> {
     console.log(`[Config] Auto-fix: ${AUTO_FIX_ENABLED ? "ENABLED" : "DISABLED"}`);
 
   const state = loadState();
-  const lastPollTime = new Date(state.lastPollTime);
   const allAlerts: Alert[] = [];
   const newSentryAlerts: SentryAlert[] = [];
 
@@ -288,7 +261,7 @@ async function poll(): Promise<void> {
   if (allAlerts.length > 0) {
     console.log(`Sending ${allAlerts.length} alerts to Telegram...`);
     for (const alert of allAlerts) {
-      await sendTelegramMessage(formatAlert(alert));
+      await sendMessage(formatAlert(alert));
       await new Promise((r) => setTimeout(r, 200));
     }
   }
@@ -332,7 +305,7 @@ async function status(): Promise<void> {
   console.log(`  Sentry: ${SENTRY_AUTH_TOKEN ? "✓" : "✗"}`);
   console.log(`  PostHog: ${POSTHOG_API_KEY ? "✓" : "✗"}`);
   console.log(`  CloudWatch: ${process.env.AWS_ACCESS_KEY_ID ? "✓" : "✗"}`);
-  console.log(`  Telegram: ${TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID ? "✓" : "✗"}`);
+  console.log(`  Telegram: ${process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID ? "✓" : "✗"}`);
   console.log(`  Auto-fix: ${AUTO_FIX_ENABLED ? "✓" : "✗"}`);
   console.log("");
   console.log("Open Tasks:");
@@ -347,7 +320,7 @@ async function status(): Promise<void> {
 
 async function testAlert(): Promise<void> {
   console.log("Sending test alert...");
-  await sendTelegramMessage(`🧪 *TEST ALERT*\nNomie SRE is working correctly!\n\nFeatures:\n✓ Rich error context\n✓ Auto-fix with Claude Code\n✓ PR feedback monitoring`);
+  await sendMessage(`🧪 *TEST ALERT*\nNomie SRE is working correctly!\n\nFeatures:\n✓ Rich error context\n✓ Auto-fix with Claude Code\n✓ PR feedback monitoring`);
   console.log("Test alert sent");
 }
 

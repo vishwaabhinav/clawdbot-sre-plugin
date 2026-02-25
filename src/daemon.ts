@@ -1,7 +1,7 @@
 import axios from "axios";
 import { getTaskByPR, updateTask } from "./state/tasks.js";
 import { mergePR, closePR, getPRDiff } from "./github/pr.js";
-import { sendActionConfirmation, sendDiff, answerCallback } from "./telegram/buttons.js";
+import { sendActionConfirmation, sendDiff, sendMessage } from "./telegram/buttons.js";
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
@@ -47,10 +47,7 @@ async function handleCallback(query: TelegramUpdate["callback_query"]): Promise<
   const [action, prNumberStr] = query.data.split(":");
   const prNumber = parseInt(prNumberStr, 10);
 
-  if (isNaN(prNumber)) {
-    await answerCallback(query.id, "Invalid PR number");
-    return;
-  }
+  if (isNaN(prNumber)) return;
 
   const user = query.from.username || query.from.first_name || "Unknown";
   console.log(`[Daemon] Received ${action} for PR #${prNumber} from ${user}`);
@@ -58,14 +55,11 @@ async function handleCallback(query: TelegramUpdate["callback_query"]): Promise<
   const task = getTaskByPR(prNumber);
   if (!task) {
     console.log(`[Daemon] No task found for PR #${prNumber}`);
-    await answerCallback(query.id, "Task not found in database");
     return;
   }
 
   switch (action) {
     case "approve": {
-      await answerCallback(query.id, "Merging PR...");
-
       const result = await mergePR(prNumber);
       if (result.success) {
         updateTask(task.sentry_id, { state: "merged" });
@@ -73,17 +67,12 @@ async function handleCallback(query: TelegramUpdate["callback_query"]): Promise<
         console.log(`[Daemon] PR #${prNumber} merged successfully`);
       } else {
         console.error(`[Daemon] Failed to merge PR #${prNumber}:`, result.error);
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          chat_id: CHAT_ID,
-          text: `❌ Failed to merge PR #${prNumber}: ${result.error}`,
-        });
+        await sendMessage(`❌ Failed to merge PR #${prNumber}: ${result.error}`);
       }
       break;
     }
 
     case "reject": {
-      await answerCallback(query.id, "Closing PR...");
-
       const result = await closePR(prNumber, `Rejected via Telegram by ${user}`);
       if (result.success) {
         updateTask(task.sentry_id, { state: "rejected" });
@@ -91,17 +80,12 @@ async function handleCallback(query: TelegramUpdate["callback_query"]): Promise<
         console.log(`[Daemon] PR #${prNumber} rejected`);
       } else {
         console.error(`[Daemon] Failed to close PR #${prNumber}:`, result.error);
-        await axios.post(`https://api.telegram.org/bot${BOT_TOKEN}/sendMessage`, {
-          chat_id: CHAT_ID,
-          text: `❌ Failed to close PR #${prNumber}: ${result.error}`,
-        });
+        await sendMessage(`❌ Failed to close PR #${prNumber}: ${result.error}`);
       }
       break;
     }
 
     case "diff": {
-      await answerCallback(query.id, "Fetching diff...");
-
       const diff = await getPRDiff(prNumber);
       await sendDiff(prNumber, diff);
       console.log(`[Daemon] Sent diff for PR #${prNumber}`);
@@ -110,16 +94,11 @@ async function handleCallback(query: TelegramUpdate["callback_query"]): Promise<
 
     default:
       console.log(`[Daemon] Unknown action: ${action}`);
-      await answerCallback(query.id, "Unknown action");
   }
 }
 
 export async function runDaemon(): Promise<void> {
-  console.log("[Daemon] ========================================");
   console.log("[Daemon] Starting Telegram callback handler...");
-  console.log("[Daemon] Polling interval: 3 seconds");
-  console.log("[Daemon] Press Ctrl+C to stop");
-  console.log("[Daemon] ========================================");
 
   if (!BOT_TOKEN || !CHAT_ID) {
     console.error("[Daemon] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set!");

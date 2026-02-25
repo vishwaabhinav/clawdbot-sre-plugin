@@ -82,10 +82,6 @@ export async function sendDiff(prNumber: number, diff: string): Promise<void> {
   await sendMessage(`📄 *Diff for PR #${prNumber}:*\n\n\`\`\`diff\n${truncatedDiff}\n\`\`\``);
 }
 
-export async function answerCallback(callbackId: string, text: string): Promise<void> {
-  // No-op since we're not using callbacks anymore
-}
-
 export async function sendFeedbackNotification(
   prNumber: number,
   shortId: string,
@@ -113,7 +109,7 @@ export async function sendFeedbackNotification(
   await sendMessage(text);
 }
 
-async function sendMessage(text: string): Promise<void> {
+export async function sendMessage(text: string): Promise<void> {
   if (!BOT_TOKEN || !CHAT_ID) {
     console.log("[Telegram] Not configured, would send:", text.slice(0, 100));
     return;

@@ -22,25 +22,16 @@ export interface FeedbackResult {
 }
 
 const REPO_PATH = "/home/clawdbot/repos/nomie-monorepo";
+const CLAUDE_PATH = "/home/clawdbot/.local/bin/claude";
 const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
-export async function spawnClaudeCode(
-  error: ErrorContext,
-  branch: string
-): Promise<FixResult> {
-  const prompt = buildFixPrompt(error, branch);
-
-  console.log(`[Spawner] Starting Claude Code for ${error.shortId}...`);
-  console.log(`[Spawner] Branch: ${branch}`);
-  console.log(`[Spawner] Timeout: ${TIMEOUT_MS / 1000}s`);
-
+function runClaude<T>(prompt: string, parseOutput: (stdout: string) => T): Promise<T> {
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let timedOut = false;
 
-    // Use claude CLI (uses OAuth credentials from ~/.claude/.credentials.json)
-    const proc = spawn("/home/clawdbot/.local/bin/claude", ["-p", prompt, "--dangerously-skip-permissions"], {
+    const proc = spawn(CLAUDE_PATH, ["-p", prompt, "--dangerously-skip-permissions"], {
       cwd: REPO_PATH,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -56,7 +47,6 @@ export async function spawnClaudeCode(
     proc.stdout.on("data", (data) => {
       const chunk = data.toString();
       stdout += chunk;
-      // Stream output for debugging
       process.stdout.write(chunk);
     });
 
@@ -70,89 +60,43 @@ export async function spawnClaudeCode(
       clearTimeout(timeout);
 
       if (timedOut) {
-        resolve({ status: "failed", error: "Claude Code timed out after 10 minutes" });
+        resolve({ status: "failed", error: "Timed out after 10 minutes" } as T);
         return;
       }
 
       if (code !== 0 && code !== null) {
         console.log(`[Spawner] Claude Code exited with code ${code}`);
-        resolve({ status: "failed", error: `Claude Code exited with code ${code}: ${stderr.slice(-500)}` });
+        resolve({ status: "failed", error: `Exit code ${code}: ${stderr.slice(-500)}` } as T);
         return;
       }
 
-      // Parse JSON from output
-      const result = parseClaudeOutput(stdout);
+      const result = parseOutput(stdout);
       console.log(`[Spawner] Parsed result:`, result);
       resolve(result);
     });
 
     proc.on("error", (err) => {
       clearTimeout(timeout);
-      console.log(`[Spawner] Spawn error:`, err);
-      resolve({ status: "failed", error: `Spawn error: ${err.message}` });
+      resolve({ status: "failed", error: err.message } as T);
     });
   });
 }
 
-export async function spawnFeedbackFix(ctx: FeedbackContext): Promise<FeedbackResult> {
-  const prompt = buildFeedbackPrompt(ctx);
+export async function spawnClaudeCode(
+  error: ErrorContext,
+  branch: string
+): Promise<FixResult> {
+  console.log(`[Spawner] Starting Claude Code for ${error.shortId}...`);
+  console.log(`[Spawner] Branch: ${branch}`);
 
+  return runClaude(buildFixPrompt(error, branch), parseClaudeOutput);
+}
+
+export async function spawnFeedbackFix(ctx: FeedbackContext): Promise<FeedbackResult> {
   console.log(`[Spawner] Addressing feedback for PR #${ctx.prNumber}...`);
   console.log(`[Spawner] ${ctx.threads.length} unresolved comments`);
 
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-
-    const proc = spawn("/home/clawdbot/.local/bin/claude", ["-p", prompt, "--dangerously-skip-permissions"], {
-      cwd: REPO_PATH,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      console.log(`[Spawner] Timeout reached, killing process...`);
-      proc.kill("SIGTERM");
-      setTimeout(() => proc.kill("SIGKILL"), 5000);
-    }, TIMEOUT_MS);
-
-    proc.stdout.on("data", (data) => {
-      const chunk = data.toString();
-      stdout += chunk;
-      process.stdout.write(chunk);
-    });
-
-    proc.stderr.on("data", (data) => {
-      const chunk = data.toString();
-      stderr += chunk;
-      process.stderr.write(chunk);
-    });
-
-    proc.on("close", (code) => {
-      clearTimeout(timeout);
-
-      if (timedOut) {
-        resolve({ status: "failed", error: "Timed out after 10 minutes" });
-        return;
-      }
-
-      if (code !== 0 && code !== null) {
-        resolve({ status: "failed", error: `Exit code ${code}: ${stderr.slice(-500)}` });
-        return;
-      }
-
-      const result = parseFeedbackOutput(stdout);
-      console.log(`[Spawner] Parsed feedback result:`, result);
-      resolve(result);
-    });
-
-    proc.on("error", (err) => {
-      clearTimeout(timeout);
-      resolve({ status: "failed", error: err.message });
-    });
-  });
+  return runClaude(buildFeedbackPrompt(ctx), parseFeedbackOutput);
 }
 
 function parseFeedbackOutput(output: string): FeedbackResult {
@@ -177,14 +121,10 @@ function parseClaudeOutput(output: string): FixResult {
   }
 
   // Try to find raw JSON object
-  const rawJsonMatch = output.match(/\{[\s\S]*"status"[\s\S]*\}/);
-  if (rawJsonMatch) {
+  const matches = output.match(/\{[^{}]*"status"[^{}]*\}/g);
+  if (matches) {
     try {
-      // Find the last complete JSON object (in case there are multiple)
-      const matches = output.match(/\{[^{}]*"status"[^{}]*\}/g);
-      if (matches && matches.length > 0) {
-        return JSON.parse(matches[matches.length - 1]);
-      }
+      return JSON.parse(matches[matches.length - 1]);
     } catch (e) {
       console.log(`[Spawner] Failed to parse raw JSON: ${e}`);
     }

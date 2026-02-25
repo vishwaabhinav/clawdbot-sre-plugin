@@ -69,21 +69,6 @@ export async function replyToThread(prNumber: number, commentId: number, body: s
   }
 }
 
-export async function getPRStatus(prNumber: number): Promise<"open" | "merged" | "closed"> {
-  try {
-    const output = execSync(
-      `gh pr view ${prNumber} --json state --jq '.state'`,
-      { cwd: REPO_PATH, encoding: "utf-8", timeout: 15000 }
-    );
-    const state = output.trim().toUpperCase();
-    if (state === "MERGED") return "merged";
-    if (state === "CLOSED") return "closed";
-    return "open";
-  } catch {
-    return "closed";
-  }
-}
-
 export interface OpenPR {
   number: number;
   title: string;

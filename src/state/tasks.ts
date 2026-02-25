@@ -33,10 +33,6 @@ export function getTask(sentryId: string): Task | null {
   return db.prepare("SELECT * FROM tasks WHERE sentry_id = ?").get(sentryId) as Task | null;
 }
 
-export function getTaskByShortId(shortId: string): Task | null {
-  return db.prepare("SELECT * FROM tasks WHERE short_id = ?").get(shortId) as Task | null;
-}
-
 export function getTaskByPR(prNumber: number): Task | null {
   return db.prepare("SELECT * FROM tasks WHERE pr_number = ?").get(prNumber) as Task | null;
 }
@@ -105,10 +101,6 @@ export function updateTask(sentryId: string, updates: Partial<Omit<Task, "sentry
     RETURNING *
   `);
   return stmt.get({ ...updates, sentry_id: sentryId }) as Task | null;
-}
-
-export function getTasksByState(state: TaskState): Task[] {
-  return db.prepare("SELECT * FROM tasks WHERE state = ? ORDER BY updated_at DESC").all(state) as Task[];
 }
 
 export function getStaleInvestigating(timeoutMinutes: number = 15): Task[] {
