@@ -1,0 +1,55 @@
+{
+  "id": "nomie-sre",
+  "name": "Nomie SRE",
+  "version": "1.0.0",
+  "description": "SRE monitoring for Nomie - polls Sentry, PostHog, and CloudWatch for issues",
+  "author": "clawdbot",
+  "main": "index.ts",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "sentryAuthToken": {
+        "type": "string",
+        "secret": true,
+        "description": "Sentry API auth token"
+      },
+      "sentryOrg": {
+        "type": "string",
+        "description": "Sentry organization slug"
+      },
+      "sentryProject": {
+        "type": "string",
+        "description": "Sentry project slug"
+      },
+      "posthogApiKey": {
+        "type": "string",
+        "secret": true,
+        "description": "PostHog API key"
+      },
+      "posthogProjectId": {
+        "type": "string",
+        "description": "PostHog project ID"
+      },
+      "awsRegion": {
+        "type": "string",
+        "default": "us-east-1",
+        "description": "AWS region for CloudWatch"
+      },
+      "pollIntervalMinutes": {
+        "type": "number",
+        "default": 5,
+        "description": "Polling interval in minutes"
+      },
+      "alertChannel": {
+        "type": "string",
+        "default": "telegram",
+        "description": "Channel to send alerts to (telegram, slack)"
+      },
+      "alertChatId": {
+        "type": "string",
+        "description": "Chat/channel ID for alerts"
+      }
+    }
+  }
+}
