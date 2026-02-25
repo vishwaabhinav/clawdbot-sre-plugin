@@ -1,7 +1,7 @@
 import axios from "axios";
 import type { PostHogAlert } from "../types.js";
 
-const POSTHOG_HOST = "https://us.i.posthog.com";
+const POSTHOG_HOST = "https://app.posthog.com";
 
 export interface DailySummary {
   date: string;
@@ -27,13 +27,13 @@ export async function getDailySummary(
   const dateStr = now.toISOString().split("T")[0];
 
   try {
-    // Get DAU
+    // Get DAU (using $screen for mobile apps, falls back from $pageview)
     const dauResponse = await axios.post(
       `${POSTHOG_HOST}/api/projects/${projectId}/query/`,
       {
         query: {
           kind: "TrendsQuery",
-          series: [{ kind: "EventsNode", event: "$pageview", math: "dau" }],
+          series: [{ kind: "EventsNode", event: "$screen", math: "dau" }],
           dateRange: {
             date_from: sevenDaysAgo.toISOString().split("T")[0],
             date_to: dateStr,
@@ -56,13 +56,13 @@ export async function getDailySummary(
       : 0;
     const dauChange = dauAvg > 0 ? ((todayDau - dauAvg) / dauAvg) * 100 : 0;
 
-    // Get total pageviews
+    // Get total screen views (pageviews equivalent for mobile)
     const pvResponse = await axios.post(
       `${POSTHOG_HOST}/api/projects/${projectId}/query/`,
       {
         query: {
           kind: "TrendsQuery",
-          series: [{ kind: "EventsNode", event: "$pageview", math: "total" }],
+          series: [{ kind: "EventsNode", event: "$screen", math: "total" }],
           dateRange: {
             date_from: sevenDaysAgo.toISOString().split("T")[0],
             date_to: dateStr,
@@ -85,8 +85,8 @@ export async function getDailySummary(
       : 0;
     const pvChange = pvAvg > 0 ? ((todayPv - pvAvg) / pvAvg) * 100 : 0;
 
-    // Get key events
-    const keyEvents = ["login", "signup", "subscription_started", "journal_entry_created", "chat_message_sent"];
+    // Get key events (actual Nomie event names)
+    const keyEvents = ["user_logged_in", "onboarding_completed", "purchase_completed", "chat_message_sent", "voice_session_started"];
     const eventStats: DailySummary["events"] = [];
 
     for (const eventName of keyEvents) {
@@ -154,7 +154,7 @@ export async function pollPostHog(
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
   try {
-    // Query DAU for today vs 7-day average
+    // Query DAU for today vs 7-day average (using $screen for mobile)
     const dauResponse = await axios.post(
       `${POSTHOG_HOST}/api/projects/${projectId}/query/`,
       {
@@ -163,7 +163,7 @@ export async function pollPostHog(
           series: [
             {
               kind: "EventsNode",
-              event: "$pageview",
+              event: "$screen",
               math: "dau",
             },
           ],
@@ -204,8 +204,8 @@ export async function pollPostHog(
       }
     }
 
-    // Query key events for anomalies
-    const keyEvents = ["login", "signup", "api_error", "subscription_started"];
+    // Query key events for anomalies (actual Nomie events)
+    const keyEvents = ["user_logged_in", "onboarding_completed", "purchase_completed", "chat_message_sent"];
     for (const eventName of keyEvents) {
       const eventResponse = await axios.post(
         `${POSTHOG_HOST}/api/projects/${projectId}/query/`,
