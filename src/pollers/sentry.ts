@@ -6,24 +6,14 @@ interface SentryIssue {
   culprit: string;
   shortId: string;
   count: string;
-  firstSeen: string;
-  lastSeen: string;
   permalink: string;
-  platform?: string;
   metadata: {
     type?: string;
-    value?: string;
     function?: string;
-    filename?: string;
   };
-  tags?: Array<{ key: string; value: string }>;
 }
 
 interface SentryEvent {
-  id: string;
-  message?: string;
-  culprit?: string;
-  context?: Record<string, any>;
   entries?: Array<{
     type: string;
     data: {
@@ -35,14 +25,11 @@ interface SentryEvent {
             filename: string;
             function: string;
             lineNo: number;
-            colNo: number;
-            context?: Array<[number, string]>;
           }>;
         };
       }>;
     };
   }>;
-  tags?: Array<{ key: string; value: string }>;
 }
 
 export interface SentryAlert {
@@ -53,12 +40,8 @@ export interface SentryAlert {
   function: string;
   count: number;
   link: string;
-  firstSeen: string;
-  lastSeen: string;
   stackTrace?: string;
-  filename?: string;
   errorType?: string;
-  tags?: Record<string, string>;
 }
 
 async function getLatestEvent(
@@ -82,15 +65,13 @@ async function getLatestEvent(
 }
 
 function extractStackTrace(event: SentryEvent): string | undefined {
-  if (!event.entries) return undefined;
-  
-  for (const entry of event.entries) {
+  for (const entry of event.entries || []) {
     if (entry.type === "exception" && entry.data.values) {
-      const exc = entry.data.values[0];
-      if (exc?.stacktrace?.frames) {
-        // Get the last 3 frames (most relevant)
-        const frames = exc.stacktrace.frames.slice(-3).reverse();
+      const frames = entry.data.values[0]?.stacktrace?.frames;
+      if (frames) {
         return frames
+          .slice(-3)
+          .reverse()
           .map(f => `  at ${f.function || "?"} (${f.filename}:${f.lineNo})`)
           .join("\n");
       }
@@ -109,7 +90,6 @@ export async function pollSentry(
   const seenSet = new Set(seenIssueIds);
 
   try {
-    // Get unresolved issues
     const response = await axios.get<SentryIssue[]>(
       `https://sentry.io/api/0/projects/${org}/${project}/issues/`,
       {
@@ -119,20 +99,9 @@ export async function pollSentry(
     );
 
     for (const issue of response.data) {
-      // Skip already-seen issues - dedup happens here now
       if (seenSet.has(issue.id)) continue;
 
-      // Fetch latest event for richer context
       const event = await getLatestEvent(authToken, org, issue.id);
-      const stackTrace = event ? extractStackTrace(event) : undefined;
-      
-      // Extract tags as object
-      const tags: Record<string, string> = {};
-      if (issue.tags) {
-        for (const tag of issue.tags) {
-          tags[tag.key] = tag.value;
-        }
-      }
 
       alerts.push({
         type: "sentry",
@@ -142,15 +111,10 @@ export async function pollSentry(
         function: issue.culprit || issue.metadata?.function || "unknown",
         count: parseInt(issue.count, 10),
         link: issue.permalink,
-        firstSeen: issue.firstSeen,
-        lastSeen: issue.lastSeen,
-        stackTrace,
-        filename: issue.metadata?.filename,
+        stackTrace: event ? extractStackTrace(event) : undefined,
         errorType: issue.metadata?.type,
-        tags,
       });
-      
-      // Small delay to avoid rate limiting
+
       await new Promise(r => setTimeout(r, 100));
     }
   } catch (error) {

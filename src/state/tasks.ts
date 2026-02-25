@@ -4,7 +4,6 @@ export type TaskState =
   | "pending"
   | "investigating"
   | "pr_open"
-  | "pr_approved"
   | "merged"
   | "rejected"
   | "failed";
@@ -114,7 +113,7 @@ export function getStaleInvestigating(timeoutMinutes: number = 15): Task[] {
 export function getAllOpenTasks(): Task[] {
   return db.prepare(`
     SELECT * FROM tasks 
-    WHERE state IN ('pending', 'investigating', 'pr_open', 'pr_approved')
+    WHERE state IN ('pending', 'investigating', 'pr_open')
     ORDER BY updated_at DESC
   `).all() as Task[];
 }

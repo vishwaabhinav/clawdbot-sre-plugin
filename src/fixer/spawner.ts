@@ -99,38 +99,27 @@ export async function spawnFeedbackFix(ctx: FeedbackContext): Promise<FeedbackRe
   return runClaude(buildFeedbackPrompt(ctx), parseFeedbackOutput);
 }
 
-function parseFeedbackOutput(output: string): FeedbackResult {
-  const jsonMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[1].trim());
-    } catch {}
+function parseJsonBlock<T>(output: string): T | null {
+  const jsonBlock = output.match(/```json\s*([\s\S]*?)\s*```/);
+  if (jsonBlock) {
+    try { return JSON.parse(jsonBlock[1].trim()); } catch {}
   }
-  return { status: "failed", error: "Could not parse output" };
+  const rawJson = output.match(/\{[^{}]*"status"[^{}]*\}/g);
+  if (rawJson) {
+    try { return JSON.parse(rawJson[rawJson.length - 1]); } catch {}
+  }
+  return null;
+}
+
+function parseFeedbackOutput(output: string): FeedbackResult {
+  return parseJsonBlock<FeedbackResult>(output) || { status: "failed", error: "Could not parse output" };
 }
 
 function parseClaudeOutput(output: string): FixResult {
-  // Try to find JSON in code block
-  const jsonBlockMatch = output.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonBlockMatch) {
-    try {
-      return JSON.parse(jsonBlockMatch[1].trim());
-    } catch (e) {
-      console.log(`[Spawner] Failed to parse JSON block: ${e}`);
-    }
-  }
+  const parsed = parseJsonBlock<FixResult>(output);
+  if (parsed) return parsed;
 
-  // Try to find raw JSON object
-  const matches = output.match(/\{[^{}]*"status"[^{}]*\}/g);
-  if (matches) {
-    try {
-      return JSON.parse(matches[matches.length - 1]);
-    } catch (e) {
-      console.log(`[Spawner] Failed to parse raw JSON: ${e}`);
-    }
-  }
-
-  // Check if a PR was created by looking for GitHub URL
+  // Fallback: detect PR creation from GitHub URL
   const prUrlMatch = output.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
   if (prUrlMatch) {
     return {

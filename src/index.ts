@@ -49,7 +49,7 @@ function formatAlert(alert: Alert): string {
     }
     case "posthog": {
       const direction = alert.changePercent > 0 ? "📈" : "📉";
-      return `${direction} *POSTHOG: ${alert.metric}*\nCurrent: ${alert.current}\n7-day avg: ${alert.baseline}\nChange: ${alert.changePercent > 0 ? "+" : ""}${alert.changePercent.toFixed(1)}%`;
+      return `${direction} *POSTHOG: ${alert.metric}*\nCurrent: ${alert.current}\n7-day avg: ${alert.baseline}\nChange: ${alert.changePercent > 0 ? "+" : ""}${alert.changePercent}%`;
     }
     case "cloudwatch": {
       return `⚠️ *CLOUDWATCH: ${alert.metric}*\nResource: \`${alert.resource}\`\nValue: ${alert.value}`;
@@ -216,77 +216,65 @@ async function checkPRFeedback(): Promise<void> {
 }
 
 async function poll(): Promise<void> {
-  // Prevent concurrent polls - auto-fix can take >5 minutes
   if (isPolling) {
     console.log(`[${new Date().toISOString()}] Poll skipped - previous poll still running`);
     return;
   }
   isPolling = true;
-  
+
   try {
     console.log(`[${new Date().toISOString()}] Starting poll...`);
     console.log(`[Config] Auto-fix: ${AUTO_FIX_ENABLED ? "ENABLED" : "DISABLED"}`);
 
-  const state = loadState();
-  const allAlerts: Alert[] = [];
-  const newSentryAlerts: SentryAlert[] = [];
+    const state = loadState();
+    const allAlerts: Alert[] = [];
 
-  // Poll Sentry
-  if (SENTRY_AUTH_TOKEN && SENTRY_ORG && SENTRY_PROJECT) {
-    console.log("Polling Sentry...");
-    // Pass seenSentryIssues for dedup - catches ALL unresolved issues we haven't seen yet
-    const sentryAlerts = await pollSentry(SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT, state.seenSentryIssues);
-    newSentryAlerts.push(...sentryAlerts);
-    // Always send Sentry alerts to Telegram first (even when auto-fix is enabled)
-    allAlerts.push(...sentryAlerts);
-    state.seenSentryIssues = [...state.seenSentryIssues, ...sentryAlerts.map((a) => a.issueId)].slice(-1000);
-    console.log(`  Found ${sentryAlerts.length} new issues`);
-  }
+    // Poll Sentry
+    if (SENTRY_AUTH_TOKEN && SENTRY_ORG && SENTRY_PROJECT) {
+      console.log("Polling Sentry...");
+      const sentryAlerts = await pollSentry(SENTRY_AUTH_TOKEN, SENTRY_ORG, SENTRY_PROJECT, state.seenSentryIssues);
+      allAlerts.push(...sentryAlerts);
+      state.seenSentryIssues = [...state.seenSentryIssues, ...sentryAlerts.map((a) => a.issueId)].slice(-1000);
+      console.log(`  Found ${sentryAlerts.length} new issues`);
+    }
 
-  // Poll PostHog
-  if (POSTHOG_API_KEY && POSTHOG_PROJECT_ID) {
-    console.log("Polling PostHog...");
-    const posthogAlerts = await pollPostHog(POSTHOG_API_KEY, POSTHOG_PROJECT_ID);
-    allAlerts.push(...posthogAlerts);
-    console.log(`  Found ${posthogAlerts.length} anomalies`);
-  }
+    // Poll PostHog
+    if (POSTHOG_API_KEY && POSTHOG_PROJECT_ID) {
+      console.log("Polling PostHog...");
+      const posthogAlerts = await pollPostHog(POSTHOG_API_KEY, POSTHOG_PROJECT_ID);
+      allAlerts.push(...posthogAlerts);
+      console.log(`  Found ${posthogAlerts.length} anomalies`);
+    }
 
-  // Poll CloudWatch
-  console.log("Polling CloudWatch...");
-  const cloudwatchAlerts = await pollCloudWatch();
-  allAlerts.push(...cloudwatchAlerts);
-  console.log(`  Found ${cloudwatchAlerts.length} issues`);
+    // Poll CloudWatch
+    console.log("Polling CloudWatch...");
+    const cloudwatchAlerts = await pollCloudWatch();
+    allAlerts.push(...cloudwatchAlerts);
+    console.log(`  Found ${cloudwatchAlerts.length} issues`);
 
-  // Send non-Sentry alerts
-  if (allAlerts.length > 0) {
-    console.log(`Sending ${allAlerts.length} alerts to Telegram...`);
+    // Send all alerts to Telegram
     for (const alert of allAlerts) {
       await sendMessage(formatAlert(alert));
       await new Promise((r) => setTimeout(r, 200));
     }
-  }
 
-  // Auto-fix new Sentry alerts
-  if (AUTO_FIX_ENABLED && newSentryAlerts.length > 0) {
-    console.log(`\n[AutoFix] Processing ${newSentryAlerts.length} new Sentry alerts...`);
-    for (const alert of newSentryAlerts) {
-      await attemptAutoFix(alert);
-      await new Promise((r) => setTimeout(r, 1000));
+    // Auto-fix new Sentry alerts
+    if (AUTO_FIX_ENABLED) {
+      const sentryAlerts = allAlerts.filter((a): a is SentryAlert => a.type === "sentry");
+      for (const alert of sentryAlerts) {
+        await attemptAutoFix(alert);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      await checkPRFeedback();
     }
-  }
 
-  // Check PR feedback
-  if (AUTO_FIX_ENABLED) {
-    await checkPRFeedback();
-  }
+    if (allAlerts.length === 0) {
+      console.log("No alerts to process");
+    }
 
-  if (allAlerts.length === 0 && newSentryAlerts.length === 0) {
-    console.log("No alerts to process");
-  }
-
-  state.lastPollTime = new Date().toISOString();
-  saveState(state);
-  console.log("\nPoll complete");
+    state.lastPollTime = new Date().toISOString();
+    saveState(state);
+    console.log("\nPoll complete");
   } finally {
     isPolling = false;
   }
