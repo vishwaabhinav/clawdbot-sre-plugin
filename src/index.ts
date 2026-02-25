@@ -1,3 +1,11 @@
+import { config as dotenvConfig } from "dotenv";
+import { dirname, resolve } from "path";
+import { fileURLToPath } from "url";
+
+// Load .env from skill directory (not cwd)
+const __dirname = dirname(fileURLToPath(import.meta.url));
+dotenvConfig({ path: resolve(__dirname, "..", ".env") });
+
 import { pollSentry, SentryAlert } from "./pollers/sentry.js";
 import { pollPostHog } from "./pollers/posthog.js";
 import { pollCloudWatch } from "./pollers/cloudwatch.js";
@@ -10,7 +18,7 @@ import { pullLatest } from "./github/pr.js";
 import { getUnresolvedThreads, replyToThread, getOpenBotPRs } from "./github/comments.js";
 import { runDaemon } from "./daemon.js";
 
-// Environment variables
+// Environment variables (loaded from .env above)
 const SENTRY_AUTH_TOKEN = process.env.SENTRY_AUTH_TOKEN || "";
 const SENTRY_ORG = process.env.SENTRY_ORG || "";
 const SENTRY_PROJECT = process.env.SENTRY_PROJECT || "";
