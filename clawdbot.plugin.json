@@ -49,6 +49,25 @@
       "alertChatId": {
         "type": "string",
         "description": "Chat/channel ID for alerts"
+      },
+      "autoFix": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable auto-fix: spawn Claude Code via acpx to create PRs for Sentry errors"
+      },
+      "autoFixRepo": {
+        "type": "string",
+        "description": "Absolute path to the repo for auto-fix"
+      },
+      "autoFixModel": {
+        "type": "string",
+        "default": "sonnet",
+        "description": "Claude Code model for auto-fix (sonnet, opus, etc.)"
+      },
+      "autoFixTimeoutSeconds": {
+        "type": "number",
+        "default": 1800,
+        "description": "Timeout in seconds for auto-fix sessions (default: 30 min)"
       }
     }
   }

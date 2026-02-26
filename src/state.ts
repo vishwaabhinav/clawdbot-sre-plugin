@@ -83,3 +83,28 @@ export function markSummarySent(): void {
   state.lastSummaryDate = new Date().toISOString().split("T")[0];
   saveState(state);
 }
+
+export function hasAlertedAnomaly(metric: string): boolean {
+  const state = loadState();
+  const today = new Date().toISOString().split("T")[0];
+  const key = `${metric}_${today}`;
+  return state.alertedAnomalies?.includes(key) ?? false;
+}
+
+export function markAnomalyAlerted(metric: string): void {
+  const state = loadState();
+  const today = new Date().toISOString().split("T")[0];
+  const key = `${metric}_${today}`;
+  
+  if (!state.alertedAnomalies) {
+    state.alertedAnomalies = [];
+  }
+  
+  if (!state.alertedAnomalies.includes(key)) {
+    state.alertedAnomalies.push(key);
+  }
+  
+  // Clean up old entries (keep only today's)
+  state.alertedAnomalies = state.alertedAnomalies.filter(k => k.endsWith(`_${today}`));
+  saveState(state);
+}

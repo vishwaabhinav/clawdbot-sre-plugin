@@ -1,4 +1,4 @@
-import type { Alert, NomieSreConfig } from "../types.js";
+import type { Alert, SentryAlert, NomieSreConfig } from "../types.js";
 import { pollSentry } from "../pollers/sentry.js";
 import { pollPostHog, getDailySummary } from "../pollers/posthog.js";
 import { pollCloudWatch } from "../pollers/cloudwatch.js";
@@ -10,8 +10,210 @@ import {
   updateLastAlerts,
   shouldSendDailySummary,
   markSummarySent,
+  hasAlertedAnomaly,
+  markAnomalyAlerted,
 } from "../state.js";
 import { formatAlert } from "../formatter.js";
+import axios from "axios";
+
+import { spawn as nodeSpawn } from "node:child_process";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Auto-fix state
+let autoFixRunning = false;
+
+interface FixResult {
+  status: "pr_created" | "failed";
+  pr_number?: number;
+  pr_url?: string;
+  root_cause?: string;
+  fix_summary?: string;
+  files_changed?: string[];
+  confidence?: string;
+  error?: string;
+}
+
+function generateBranch(shortId: string): string {
+  const ts = new Date().toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+  return `fix/sentry-${shortId}-${ts}`;
+}
+
+function buildFixPrompt(alerts: SentryAlert[], branch: string): string {
+  const errorDetails = alerts.map((a, i) => `ERROR ${i + 1}:
+- Sentry ID: ${a.shortId}
+- Title: ${a.title}
+- Function: ${a.function}
+- Type: ${a.errorType || "Error"}
+- Count: ${a.count} occurrences
+- File: ${a.filename || "unknown"}
+- Link: ${a.link}
+${a.stackTrace ? `\nSTACK TRACE:\n${a.stackTrace}` : ""}`).join("\n\n");
+
+  return `You are investigating production errors in nomie-monorepo.
+
+${errorDetails}
+
+INSTRUCTIONS:
+1. Ensure you are on a clean main branch:
+   git checkout main && git pull origin main
+2. Read the relevant files to understand the error context
+3. Identify the root cause of each error
+4. Create and checkout a new branch from main:
+   git checkout -b ${branch}
+5. Implement minimal fixes (fix only what is broken, do not refactor)
+6. Add or update tests if appropriate
+7. Commit with a message starting with "fix: "
+8. Push the branch to origin
+9. Create a PR to main using: gh pr create --title "fix: <brief description>" --body "Auto-fix for Sentry errors: ${alerts.map(a => a.shortId).join(", ")}"
+
+IMPORTANT:
+- Skip errors in node_modules/ or native code — just note them
+- Fix only app code (src/, app/, components/, etc.)
+- Keep changes minimal and focused
+
+When completely done, output ONLY this JSON block:
+
+\`\`\`json
+{
+  "status": "pr_created",
+  "pr_number": <the PR number>,
+  "pr_url": "<full PR URL>",
+  "root_cause": "<1-2 sentence explanation>",
+  "fix_summary": "<1-2 sentence description of what you fixed>",
+  "files_changed": ["<file1>", "<file2>"],
+  "confidence": "high" or "medium" or "low"
+}
+\`\`\`
+
+If you cannot fix any of the issues:
+
+\`\`\`json
+{
+  "status": "failed",
+  "error": "<explanation>"
+}
+\`\`\``;
+}
+
+function parseFixOutput(output: string): FixResult {
+  const jsonBlock = output.match(/```json\s*([\s\S]*?)\s*```/);
+  if (jsonBlock) {
+    try { return JSON.parse(jsonBlock[1].trim()); } catch {}
+  }
+  const rawJson = output.match(/\{[^{}]*"status"[^{}]*\}/g);
+  if (rawJson) {
+    try { return JSON.parse(rawJson[rawJson.length - 1]); } catch {}
+  }
+  const prMatch = output.match(/https:\/\/github\.com\/[^\s]+\/pull\/(\d+)/);
+  if (prMatch) {
+    return {
+      status: "pr_created",
+      pr_number: parseInt(prMatch[1], 10),
+      pr_url: prMatch[0],
+      root_cause: "See PR for details",
+      fix_summary: "See PR for details",
+      files_changed: [],
+      confidence: "medium",
+    };
+  }
+  return { status: "failed", error: "Could not parse Claude Code output" };
+}
+
+async function spawnAutoFix(
+  alerts: Alert[],
+  config: NomieSreConfig,
+  sendAlert: (msg: string) => Promise<void>,
+  log: (msg: string) => void
+): Promise<void> {
+  if (!config.autoFix || alerts.length === 0) return;
+  if (autoFixRunning) {
+    log("[nomie-sre] Auto-fix already running, skipping");
+    return;
+  }
+  if (!config.autoFixRepo) {
+    log("[nomie-sre] autoFixRepo not configured, skipping auto-fix");
+    return;
+  }
+
+  const sentryAlerts = (alerts.filter(a => a.type === "sentry") as SentryAlert[])
+    .filter(a => a.stackTrace && !a.stackTrace.includes("node_modules"));
+  if (sentryAlerts.length === 0) return;
+
+  const branch = generateBranch(sentryAlerts[0].shortId);
+  const prompt = buildFixPrompt(sentryAlerts, branch);
+  const timeout = config.autoFixTimeoutSeconds || 1800;
+  const model = config.autoFixModel || "sonnet";
+
+  const tmpFile = join(tmpdir(), `nomie-sre-autofix-${Date.now()}.txt`);
+  writeFileSync(tmpFile, prompt);
+
+  autoFixRunning = true;
+  log(`[nomie-sre] Spawning auto-fix for ${sentryAlerts.length} errors (branch: ${branch}, model: ${model}, timeout: ${timeout}s)`);
+
+  try {
+    await sendAlert(`\u2699\ufe0f Auto-fix started for ${sentryAlerts.length} Sentry error(s): ${sentryAlerts.map(a => a.shortId).join(", ")}\nBranch: \`${branch}\``);
+  } catch {}
+
+  const proc = nodeSpawn(
+    "/usr/bin/acpx",
+    ["--timeout", String(timeout), "--cwd", config.autoFixRepo, "claude", "exec", "-f", tmpFile],
+    {
+      cwd: config.autoFixRepo,
+      env: { ...process.env, PATH: `/home/clawdbot/.local/bin:/home/clawdbot/.bun/bin:${process.env.PATH}` },
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: true,
+    }
+  );
+
+  let stdout = "";
+  let stderr = "";
+
+  proc.stdout?.on("data", (data: Buffer) => { stdout += data.toString(); });
+  proc.stderr?.on("data", (data: Buffer) => { stderr += data.toString(); });
+
+  proc.on("close", async (code: number | null) => {
+    autoFixRunning = false;
+    try { unlinkSync(tmpFile); } catch {}
+
+    log(`[nomie-sre] Auto-fix exited with code ${code}`);
+
+    if (code !== 0 && code !== null) {
+      const errMsg = stderr.slice(-500) || stdout.slice(-500) || "Unknown error";
+      log(`[nomie-sre] Auto-fix failed: ${errMsg}`);
+      try {
+        await sendAlert(`\u274c Auto-fix failed (exit ${code}):\n\`\`\`\n${errMsg}\n\`\`\``);
+      } catch {}
+      return;
+    }
+
+    const result = parseFixOutput(stdout);
+    log(`[nomie-sre] Auto-fix result: ${JSON.stringify(result)}`);
+
+    if (result.status === "pr_created" && result.pr_url) {
+      try {
+        await sendAlert(`\u2705 Auto-fix PR created!\n\n*Root cause:* ${result.root_cause || "See PR"}\n*Fix:* ${result.fix_summary || "See PR"}\n*Confidence:* ${result.confidence || "unknown"}\n*Files:* ${(result.files_changed || []).join(", ") || "See PR"}\n\n[Review PR](${result.pr_url})`);
+      } catch {}
+    } else {
+      try {
+        await sendAlert(`\u26a0\ufe0f Auto-fix could not create a PR:\n${result.error || "Unknown reason"}\n\nManual investigation needed.`);
+      } catch {}
+    }
+  });
+
+  proc.on("error", async (err: Error) => {
+    autoFixRunning = false;
+    try { unlinkSync(tmpFile); } catch {}
+    log(`[nomie-sre] Auto-fix spawn error: ${err.message}`);
+    try {
+      await sendAlert(`\u274c Auto-fix spawn failed: ${err.message}`);
+    } catch {}
+  });
+
+  proc.unref();
+}
+
 
 // Daily summary hour (9 AM UTC)
 const SUMMARY_HOUR_UTC = 9;
@@ -68,8 +270,12 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
         config.posthogApiKey,
         config.posthogProjectId
       );
-      allAlerts.push(...posthogAlerts);
-      log(`[nomie-sre]   Found ${posthogAlerts.length} anomalies`);
+      // Filter out already-alerted anomalies (only alert once per metric per day)
+      const newPosthogAlerts = posthogAlerts.filter(
+        (alert) => !hasAlertedAnomaly(alert.metric)
+      );
+      allAlerts.push(...newPosthogAlerts);
+      log(`[nomie-sre]   Found ${posthogAlerts.length} anomalies, ${newPosthogAlerts.length} new`);
     }
 
     // Poll CloudWatch
@@ -89,6 +295,10 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
       for (const alert of allAlerts) {
         try {
           await sendAlert(formatAlert(alert));
+          // Mark PostHog anomalies as alerted so we don't re-alert today
+          if (alert.type === "posthog") {
+            markAnomalyAlerted(alert.metric);
+          }
           await new Promise((r) => setTimeout(r, 200)); // Rate limit
         } catch (error) {
           log(`[nomie-sre] Failed to send alert: ${error}`);
@@ -97,6 +307,11 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
     }
 
     log(`[nomie-sre] Poll complete. ${allAlerts.length} alerts found.`);
+
+    // Trigger auto-fix for Sentry errors if enabled
+    if (allAlerts.length > 0 && config.autoFix) {
+      await spawnAutoFix(allAlerts, config, sendAlert, log);
+    }
 
     // Check if we should send daily summary (at or after SUMMARY_HOUR_UTC)
     const currentHour = new Date().getUTCHours();

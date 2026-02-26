@@ -1,4 +1,5 @@
-import type { ClawdbotPluginApi } from "clawdbot/plugin-sdk";
+// @ts-ignore - Plugin SDK types resolved at runtime
+type ClawdbotPluginApi = any;
 import type { NomieSreConfig, Alert } from "./src/types.js";
 import {
   loadState,
@@ -65,6 +66,11 @@ const plugin = {
       pollIntervalMinutes: { type: "number" as const, default: 5 },
       alertChannel: { type: "string" as const, default: "telegram" },
       alertChatId: { type: "string" as const },
+      // Auto-fix options
+      autoFix: { type: "boolean" as const, default: false },
+      autoFixRepo: { type: "string" as const },
+      autoFixModel: { type: "string" as const, default: "sonnet" },
+      autoFixTimeoutSeconds: { type: "number" as const, default: 1800 },
     },
   },
 
@@ -87,6 +93,11 @@ const plugin = {
         pollIntervalMinutes: cfg.pollIntervalMinutes || 5,
         alertChannel: cfg.alertChannel || "telegram",
         alertChatId: cfg.alertChatId || process.env.TELEGRAM_CHAT_ID,
+        // Auto-fix options
+        autoFix: cfg.autoFix || false,
+        autoFixRepo: cfg.autoFixRepo || "",
+        autoFixModel: cfg.autoFixModel || "sonnet",
+        autoFixTimeoutSeconds: cfg.autoFixTimeoutSeconds || 1800,
       };
     };
 

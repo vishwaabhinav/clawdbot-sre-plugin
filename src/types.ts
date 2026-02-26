@@ -88,6 +88,7 @@ export interface PluginState {
   silencedUntil: string | null;
   lastAlerts: Alert[];
   lastSummaryDate?: string; // YYYY-MM-DD format
+  alertedAnomalies?: string[]; // metric_YYYY-MM-DD keys for deduplication
 }
 
 // Plugin config
@@ -101,4 +102,9 @@ export interface NomieSreConfig {
   pollIntervalMinutes?: number;
   alertChannel?: string;
   alertChatId?: string;
+  // Auto-fix options
+  autoFix?: boolean;
+  autoFixRepo?: string;
+  autoFixModel?: string;
+  autoFixTimeoutSeconds?: number;
 }
