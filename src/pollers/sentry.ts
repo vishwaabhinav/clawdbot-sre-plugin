@@ -7,14 +7,13 @@ async function getLatestEvent(
   issueId: string
 ): Promise<SentryEvent | null> {
   try {
-    const response = await axios.get<SentryEvent[]>(
-      `https://sentry.io/api/0/issues/${issueId}/events/`,
+    const response = await axios.get<SentryEvent>(
+      `https://sentry.io/api/0/issues/${issueId}/events/latest/`,
       {
         headers: { Authorization: `Bearer ${authToken}` },
-        params: { limit: 1 },
       }
     );
-    return response.data[0] || null;
+    return response.data || null;
   } catch (error) {
     console.error(`[nomie-sre] Error fetching event for issue ${issueId}:`, error);
     return null;
