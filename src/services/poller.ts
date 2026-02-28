@@ -154,7 +154,9 @@ async function spawnAutoFix(
 
   try {
     await sendAlert(`\u2699\ufe0f Auto-fix started for ${sentryAlerts.length} Sentry error(s): ${sentryAlerts.map(a => a.shortId).join(", ")}\nBranch: \`${branch}\``);
-  } catch {}
+  } catch (err) {
+    log(`[nomie-sre] Failed to send auto-fix started alert: ${err}`);
+  }
 
   const proc = nodeSpawn(
     "/usr/bin/acpx",
@@ -184,7 +186,9 @@ async function spawnAutoFix(
       log(`[nomie-sre] Auto-fix failed: ${errMsg}`);
       try {
         await sendAlert(`\u274c Auto-fix failed (exit ${code}):\n\`\`\`\n${errMsg}\n\`\`\``);
-      } catch {}
+      } catch (err) {
+        log(`[nomie-sre] Failed to send auto-fix failure alert: ${err}`);
+      }
       return;
     }
 
@@ -194,11 +198,15 @@ async function spawnAutoFix(
     if (result.status === "pr_created" && result.pr_url) {
       try {
         await sendAlert(`\u2705 Auto-fix PR created!\n\n*Root cause:* ${result.root_cause || "See PR"}\n*Fix:* ${result.fix_summary || "See PR"}\n*Confidence:* ${result.confidence || "unknown"}\n*Files:* ${(result.files_changed || []).join(", ") || "See PR"}\n\n[Review PR](${result.pr_url})`);
-      } catch {}
+      } catch (err) {
+        log(`[nomie-sre] Failed to send PR created alert: ${err}`);
+      }
     } else {
       try {
         await sendAlert(`\u26a0\ufe0f Auto-fix could not create a PR:\n${result.error || "Unknown reason"}\n\nManual investigation needed.`);
-      } catch {}
+      } catch (err) {
+        log(`[nomie-sre] Failed to send PR failure alert: ${err}`);
+      }
     }
   });
 
@@ -208,7 +216,9 @@ async function spawnAutoFix(
     log(`[nomie-sre] Auto-fix spawn error: ${err.message}`);
     try {
       await sendAlert(`\u274c Auto-fix spawn failed: ${err.message}`);
-    } catch {}
+    } catch (alertErr) {
+      log(`[nomie-sre] Failed to send spawn error alert: ${alertErr}`);
+    }
   });
 
   proc.unref();
