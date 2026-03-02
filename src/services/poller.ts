@@ -24,6 +24,12 @@ import { join } from "node:path";
 // Auto-fix state
 let autoFixRunning = false;
 
+// Escape Telegram Markdown special characters
+function escapeMd(text: string): string {
+  if (!text) return text;
+  return text.replace(/([_*`\[\]])/g, '\\$1');
+}
+
 interface FixResult {
   status: "pr_created" | "failed";
   pr_number?: number;
@@ -197,7 +203,10 @@ async function spawnAutoFix(
 
     if (result.status === "pr_created" && result.pr_url) {
       try {
-        await sendAlert(`\u2705 Auto-fix PR created!\n\n*Root cause:* ${result.root_cause || "See PR"}\n*Fix:* ${result.fix_summary || "See PR"}\n*Confidence:* ${result.confidence || "unknown"}\n*Files:* ${(result.files_changed || []).join(", ") || "See PR"}\n\n[Review PR](${result.pr_url})`);
+        const rootCause = escapeMd(result.root_cause || "See PR");
+        const fixSummary = escapeMd(result.fix_summary || "See PR");
+        const files = escapeMd((result.files_changed || []).join(", ") || "See PR");
+        await sendAlert(`\u2705 Auto-fix PR created!\n\n*Root cause:* ${rootCause}\n*Fix:* ${fixSummary}\n*Confidence:* ${result.confidence || "unknown"}\n*Files:* ${files}\n\n[Review PR](${result.pr_url})`);
       } catch (err) {
         log(`[nomie-sre] Failed to send PR created alert: ${err}`);
       }

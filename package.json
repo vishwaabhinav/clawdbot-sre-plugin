@@ -5,6 +5,7 @@
   "main": "index.ts",
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.450.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1000.0",
     "axios": "^1.6.0"
   },
   "devDependencies": {

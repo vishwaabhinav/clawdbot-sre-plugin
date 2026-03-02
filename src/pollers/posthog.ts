@@ -243,8 +243,9 @@ export async function pollPostHog(
 
         if (avg > 0) {
           const changePercent = ((today - avg) / avg) * 100;
-          // Alert on >50% spike or drop
-          if (Math.abs(changePercent) > 50) {
+          // Alert only on significant DROPS (>80%) - ignore spikes
+          // Small apps have high variance, so we only care about big drops
+          if (changePercent < -80) {
             alerts.push({
               type: "posthog",
               metric: eventName,
