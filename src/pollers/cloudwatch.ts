@@ -9,8 +9,8 @@ import {
 } from "@aws-sdk/client-cloudwatch-logs";
 import type { CloudWatchAlert } from "../types.js";
 
-// Search both prod and dev/staging environments
-const LAMBDA_PREFIXES = ["nomie-prod", "nomie-abhinav"];
+// Only search production environment
+const LAMBDA_PREFIXES = ["nomie-prod"];
 
 interface LambdaErrorDetail {
   functionName: string;
