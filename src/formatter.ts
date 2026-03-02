@@ -23,7 +23,20 @@ export function formatAlert(alert: Alert): string {
       return `${direction} *POSTHOG: ${alert.metric}*\nCurrent: ${alert.current}\n7-day avg: ${alert.baseline}\nChange: ${alert.changePercent > 0 ? "+" : ""}${alert.changePercent.toFixed(1)}%`;
     }
     case "cloudwatch": {
-      return `⚠️ *CLOUDWATCH: ${alert.metric}*\nResource: \`${alert.resource}\`\nValue: ${alert.value}`;
+      let msg = `⚠️ *CLOUDWATCH: ${alert.metric}*\n`;
+      msg += `*Resource:* \`${alert.resource}\`\n`;
+      if (alert.timestamp) {
+        const time = new Date(alert.timestamp).toLocaleTimeString('en-US', { hour12: false });
+        msg += `*Time:* ${time} UTC\n`;
+      }
+      if (alert.details) {
+        // Truncate and format error details
+        const details = alert.details.length > 300 
+          ? alert.details.slice(0, 300) + "..." 
+          : alert.details;
+        msg += `\n\`\`\`\n${details}\n\`\`\``;
+      }
+      return msg;
     }
   }
 }
@@ -38,7 +51,12 @@ export function formatAlertPlain(alert: Alert): string {
       return `[POSTHOG] ${alert.metric}: ${alert.current} (${direction} ${Math.abs(alert.changePercent).toFixed(1)}% from baseline ${alert.baseline})`;
     }
     case "cloudwatch": {
-      return `[CLOUDWATCH] ${alert.metric}: ${alert.value} on ${alert.resource}`;
+      let msg = `[CLOUDWATCH] ${alert.metric} on ${alert.resource}`;
+      if (alert.details) {
+        const shortDetails = alert.details.slice(0, 100).replace(/\n/g, ' ');
+        msg += `: ${shortDetails}`;
+      }
+      return msg;
     }
   }
 }

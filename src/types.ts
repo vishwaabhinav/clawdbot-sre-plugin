@@ -76,6 +76,8 @@ export interface CloudWatchAlert {
   resource: string;
   value: number;
   threshold: number;
+  details?: string;    // Actual error message from logs
+  timestamp?: string;  // When the error occurred
 }
 
 // Union type for all alerts
