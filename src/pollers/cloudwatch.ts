@@ -9,7 +9,8 @@ import {
 } from "@aws-sdk/client-cloudwatch-logs";
 import type { CloudWatchAlert } from "../types.js";
 
-const LAMBDA_PREFIX = "nomie-prod";
+// Search both prod and dev/staging environments
+const LAMBDA_PREFIXES = ["nomie-prod", "nomie-abhinav"];
 
 interface LambdaErrorDetail {
   functionName: string;
@@ -30,22 +31,26 @@ async function fetchLambdaErrorDetails(
   const startTime = now - minutesAgo * 60 * 1000;
 
   try {
-    // Get all nomie-prod lambda log groups
-    const logGroups = await logsClient.send(
-      new DescribeLogGroupsCommand({
-        logGroupNamePrefix: `/aws/lambda/${LAMBDA_PREFIX}`,
-        limit: 50,
-      })
-    );
+    // Get lambda log groups from all environments
+    const allLogGroups: string[] = [];
+    for (const prefix of LAMBDA_PREFIXES) {
+      const response = await logsClient.send(
+        new DescribeLogGroupsCommand({
+          logGroupNamePrefix: `/aws/lambda/${prefix}`,
+          limit: 50,
+        })
+      );
+      for (const g of response.logGroups || []) {
+        if (g.logGroupName) allLogGroups.push(g.logGroupName);
+      }
+    }
 
-    for (const group of logGroups.logGroups || []) {
-      if (!group.logGroupName) continue;
-
+    for (const logGroupName of allLogGroups) {
       try {
         // Search for error patterns in logs
         const logs = await logsClient.send(
           new FilterLogEventsCommand({
-            logGroupName: group.logGroupName,
+            logGroupName,
             startTime,
             endTime: now,
             filterPattern: '?"ERROR" ?"Error" ?"error" ?"Exception" ?"Task timed out" ?"Runtime.UnhandledPromiseRejection"',
@@ -61,13 +66,12 @@ async function fetchLambdaErrorDetails(
           if (event.message.includes('START RequestId') || event.message.includes('END RequestId')) continue;
           if (event.message.includes('REPORT RequestId') && !event.message.includes('Error')) continue;
 
-          // Extract function name from log group
-          const functionName = group.logGroupName
-            .replace('/aws/lambda/', '')
-            .replace(LAMBDA_PREFIX + '-', '')
-            .split('-')
-            .slice(0, 2)
-            .join('-');
+          // Extract function name from log group (remove prefix)
+          let functionName = logGroupName.replace('/aws/lambda/', '');
+          for (const prefix of LAMBDA_PREFIXES) {
+            functionName = functionName.replace(prefix + '-', '');
+          }
+          functionName = functionName.split('-').slice(0, 2).join('-');
 
           // Extract request ID if present
           const requestIdMatch = event.message.match(/RequestId:\s*([a-f0-9-]+)/i);
