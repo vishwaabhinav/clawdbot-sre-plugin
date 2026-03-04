@@ -68,6 +68,11 @@
         "type": "number",
         "default": 1800,
         "description": "Timeout in seconds for auto-fix sessions (default: 30 min)"
+      },
+      "digestIntervalHours": {
+        "type": "number",
+        "default": 3,
+        "description": "Interval in hours between digest summaries"
       }
     }
   }

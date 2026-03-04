@@ -12,6 +12,10 @@ import {
   markSummarySent,
   hasAlertedAnomaly,
   markAnomalyAlerted,
+  addPendingDigestAlerts,
+  getPendingDigestAlerts,
+  clearPendingDigestAlerts,
+  shouldSendDigest,
 } from "../state.js";
 import { formatAlert } from "../formatter.js";
 import axios from "axios";
@@ -310,17 +314,76 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
 
     // Send alerts if not silenced
     if (allAlerts.length > 0 && !isSilenced(state)) {
-      log(`[nomie-sre] Sending ${allAlerts.length} alerts...`);
-      for (const alert of allAlerts) {
-        try {
-          await sendAlert(formatAlert(alert));
-          // Mark PostHog anomalies as alerted so we don't re-alert today
-          if (alert.type === "posthog") {
-            markAnomalyAlerted(alert.metric);
+      const digestMode = config.digestIntervalHours && config.digestIntervalHours > 0;
+      
+      if (digestMode) {
+        // Digest mode: batch alerts and send periodically
+        addPendingDigestAlerts(allAlerts);
+        log(`[nomie-sre] Added ${allAlerts.length} alerts to digest queue`);
+        
+        // Check if it's time to send digest
+        if (shouldSendDigest(config.digestIntervalHours!)) {
+          const pendingAlerts = getPendingDigestAlerts();
+          if (pendingAlerts.length > 0) {
+            log(`[nomie-sre] Sending digest with ${pendingAlerts.length} alerts...`);
+            
+            // Group alerts by type
+            const sentryAlerts = pendingAlerts.filter(a => a.type === "sentry");
+            const posthogAlerts = pendingAlerts.filter(a => a.type === "posthog");
+            const cloudwatchAlerts = pendingAlerts.filter(a => a.type === "cloudwatch");
+            
+            // Build digest message
+            let digestMsg = `📊 *SRE Digest Report*\n_${pendingAlerts.length} issue(s) in the last ${config.digestIntervalHours}h_\n\n`;
+            
+            if (sentryAlerts.length > 0) {
+              digestMsg += `🔴 *Sentry Errors* (${sentryAlerts.length}):\n`;
+              for (const alert of sentryAlerts) {
+                digestMsg += formatAlert(alert) + "\n\n";
+              }
+            }
+            
+            if (posthogAlerts.length > 0) {
+              digestMsg += `📈 *PostHog Anomalies* (${posthogAlerts.length}):\n`;
+              for (const alert of posthogAlerts) {
+                digestMsg += formatAlert(alert) + "\n\n";
+              }
+            }
+            
+            if (cloudwatchAlerts.length > 0) {
+              digestMsg += `☁️ *CloudWatch Alerts* (${cloudwatchAlerts.length}):\n`;
+              for (const alert of cloudwatchAlerts) {
+                digestMsg += formatAlert(alert) + "\n\n";
+              }
+            }
+            
+            try {
+              await sendAlert(digestMsg.trim());
+              clearPendingDigestAlerts();
+              // Mark PostHog anomalies as alerted
+              for (const alert of posthogAlerts) {
+                if (alert.type === "posthog") {
+                  markAnomalyAlerted(alert.metric);
+                }
+              }
+            } catch (error) {
+              log(`[nomie-sre] Failed to send digest: ${error}`);
+            }
           }
-          await new Promise((r) => setTimeout(r, 200)); // Rate limit
-        } catch (error) {
-          log(`[nomie-sre] Failed to send alert: ${error}`);
+        }
+      } else {
+        // Immediate mode: send alerts right away
+        log(`[nomie-sre] Sending ${allAlerts.length} alerts immediately...`);
+        for (const alert of allAlerts) {
+          try {
+            await sendAlert(formatAlert(alert));
+            // Mark PostHog anomalies as alerted so we don't re-alert today
+            if (alert.type === "posthog") {
+              markAnomalyAlerted(alert.metric);
+            }
+            await new Promise((r) => setTimeout(r, 200)); // Rate limit
+          } catch (error) {
+            log(`[nomie-sre] Failed to send alert: ${error}`);
+          }
         }
       }
     }

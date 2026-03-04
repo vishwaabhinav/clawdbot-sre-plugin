@@ -108,3 +108,41 @@ export function markAnomalyAlerted(metric: string): void {
   state.alertedAnomalies = state.alertedAnomalies.filter(k => k.endsWith(`_${today}`));
   saveState(state);
 }
+
+// Digest mode helpers
+export function addPendingDigestAlerts(alerts: Alert[]): void {
+  const state = loadState();
+  if (!state.pendingDigestAlerts) {
+    state.pendingDigestAlerts = [];
+  }
+  state.pendingDigestAlerts.push(...alerts);
+  saveState(state);
+}
+
+export function getPendingDigestAlerts(): Alert[] {
+  const state = loadState();
+  return state.pendingDigestAlerts || [];
+}
+
+export function clearPendingDigestAlerts(): void {
+  const state = loadState();
+  state.pendingDigestAlerts = [];
+  state.lastDigestTime = new Date().toISOString();
+  saveState(state);
+}
+
+export function shouldSendDigest(intervalHours: number): boolean {
+  const state = loadState();
+  if (!state.lastDigestTime) return true; // First digest
+  
+  const lastDigest = new Date(state.lastDigestTime).getTime();
+  const now = Date.now();
+  const hoursSinceLastDigest = (now - lastDigest) / (1000 * 60 * 60);
+  
+  return hoursSinceLastDigest >= intervalHours;
+}
+
+export function getLastDigestTime(): string | null {
+  const state = loadState();
+  return state.lastDigestTime || null;
+}

@@ -91,6 +91,8 @@ export interface PluginState {
   lastAlerts: Alert[];
   lastSummaryDate?: string; // YYYY-MM-DD format
   alertedAnomalies?: string[]; // metric_YYYY-MM-DD keys for deduplication
+  pendingDigestAlerts?: Alert[]; // Alerts waiting for next digest
+  lastDigestTime?: string; // ISO timestamp of last digest send
 }
 
 // Plugin config
@@ -104,6 +106,8 @@ export interface NomieSreConfig {
   pollIntervalMinutes?: number;
   alertChannel?: string;
   alertChatId?: string;
+  // Digest mode - batch alerts and send every X hours instead of immediately
+  digestIntervalHours?: number; // e.g. 3 = send digest every 3 hours
   // Auto-fix options
   autoFix?: boolean;
   autoFixRepo?: string;

@@ -189,7 +189,7 @@ export async function pollCloudWatch(
         alerts.push({
           type: "cloudwatch",
           metric: "Lambda Throttles",
-          resource: LAMBDA_PREFIX,
+          resource: LAMBDA_PREFIXES.join(", "),
           value,
           threshold: 0,
         });
@@ -238,7 +238,7 @@ export async function pollCloudWatch(
         alerts.push({
           type: "cloudwatch",
           metric: "Lambda Errors",
-          resource: LAMBDA_PREFIX,
+          resource: LAMBDA_PREFIXES.join(", "),
           value: lambdaErrorCount,
           threshold: 0,
           details: "Error details not available in logs",
