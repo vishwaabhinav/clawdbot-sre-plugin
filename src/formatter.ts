@@ -3,11 +3,18 @@ import type { Alert, SentryAlert } from "./types.js";
 export function formatAlert(alert: Alert): string {
   switch (alert.type) {
     case "sentry": {
-      let msg = `🚨 *SENTRY: ${alert.shortId}*\n`;
+      // Show different header for re-alerts vs new issues
+      let msg = alert.isReAlert
+        ? `🔄 *SENTRY: ${alert.shortId}* (recurring)\n`
+        : `🚨 *SENTRY: ${alert.shortId}*\n`;
       msg += `*Error:* ${alert.title}\n`;
       msg += `*Function:* \`${alert.function}\`\n`;
       if (alert.errorType) msg += `*Type:* ${alert.errorType}\n`;
-      msg += `*Count:* ${alert.count} events\n`;
+      if (alert.isReAlert && alert.newEvents) {
+        msg += `*New events:* +${alert.newEvents} (total: ${alert.count})\n`;
+      } else {
+        msg += `*Count:* ${alert.count} events\n`;
+      }
       if (alert.stackTrace) {
         const truncatedTrace =
           alert.stackTrace.length > 500
