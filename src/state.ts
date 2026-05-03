@@ -72,6 +72,28 @@ export function addSeenSentryIssues(issueIds: string[]): void {
   saveState(state);
 }
 
+export function updateSentryCounts(counts: Record<string, number>): void {
+  const state = loadState();
+  if (!state.seenSentryCounts) {
+    state.seenSentryCounts = {};
+  }
+  // Update counts for each issue
+  for (const [issueId, count] of Object.entries(counts)) {
+    state.seenSentryCounts[issueId] = count;
+  }
+  // Clean up old entries - keep only last 1000
+  const entries = Object.entries(state.seenSentryCounts);
+  if (entries.length > 1000) {
+    state.seenSentryCounts = Object.fromEntries(entries.slice(-1000));
+  }
+  saveState(state);
+}
+
+export function getSentryCounts(): Record<string, number> {
+  const state = loadState();
+  return state.seenSentryCounts || {};
+}
+
 export function shouldSendDailySummary(): boolean {
   const state = loadState();
   const today = new Date().toISOString().split("T")[0];

@@ -42,7 +42,8 @@ export async function pollSentry(
   authToken: string,
   org: string,
   project: string,
-  seenIssueIds: string[] = []
+  seenIssueIds: string[] = [],
+  seenCounts: Record<string, number> = {}
 ): Promise<SentryAlert[]> {
   const alerts: SentryAlert[] = [];
   const seenSet = new Set(seenIssueIds);
@@ -58,8 +59,17 @@ export async function pollSentry(
     );
 
     for (const issue of response.data) {
-      // Skip already-seen issues
-      if (seenSet.has(issue.id)) continue;
+      const currentCount = parseInt(issue.count, 10);
+      const lastKnownCount = seenCounts[issue.id] || 0;
+      
+      // Skip if already seen AND no new events since last check
+      if (seenSet.has(issue.id) && currentCount <= lastKnownCount) continue;
+      
+      // Log if this is a re-alert due to new events
+      const isReAlert = seenSet.has(issue.id) && currentCount > lastKnownCount;
+      if (isReAlert) {
+        console.log(`[nomie-sre] Re-alerting ${issue.shortId}: ${currentCount - lastKnownCount} new events (was ${lastKnownCount}, now ${currentCount})`);
+      }
 
       // Fetch latest event for richer context
       const event = await getLatestEvent(authToken, org, issue.id);
@@ -79,7 +89,7 @@ export async function pollSentry(
         shortId: issue.shortId,
         title: issue.title,
         function: issue.culprit || issue.metadata?.function || "unknown",
-        count: parseInt(issue.count, 10),
+        count: currentCount,
         link: issue.permalink,
         firstSeen: issue.firstSeen,
         lastSeen: issue.lastSeen,
@@ -87,6 +97,8 @@ export async function pollSentry(
         filename: issue.metadata?.filename,
         errorType: issue.metadata?.type,
         tags,
+        isReAlert,
+        newEvents: isReAlert ? currentCount - lastKnownCount : undefined,
       });
 
       // Small delay to avoid rate limiting

@@ -58,6 +58,8 @@ export interface SentryAlert {
   filename?: string;
   errorType?: string;
   tags?: Record<string, string>;
+  isReAlert?: boolean;  // true if this is a recurring issue with new events
+  newEvents?: number;   // number of new events since last alert
 }
 
 // PostHog types
@@ -86,7 +88,8 @@ export type Alert = SentryAlert | PostHogAlert | CloudWatchAlert;
 // Plugin state
 export interface PluginState {
   lastPollTime: string;
-  seenSentryIssues: string[];
+  seenSentryIssues: string[];  // Legacy - kept for backwards compat
+  seenSentryCounts?: Record<string, number>;  // issueId → last known event count
   silencedUntil: string | null;
   lastAlerts: Alert[];
   lastSummaryDate?: string; // YYYY-MM-DD format

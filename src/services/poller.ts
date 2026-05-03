@@ -7,6 +7,8 @@ import {
   saveState,
   isSilenced,
   addSeenSentryIssues,
+  updateSentryCounts,
+  getSentryCounts,
   updateLastAlerts,
   shouldSendDailySummary,
   markSummarySent,
@@ -21,7 +23,7 @@ import { formatAlert } from "../formatter.js";
 import axios from "axios";
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -128,7 +130,7 @@ function parseFixOutput(output: string): FixResult {
       confidence: "medium",
     };
   }
-  return { status: "failed", error: "Could not parse Claude Code output" };
+  return { status: "failed", error: "Could not parse Codex output" };
 }
 
 async function spawnAutoFix(
@@ -137,6 +139,7 @@ async function spawnAutoFix(
   sendAlert: (msg: string) => Promise<void>,
   log: (msg: string) => void
 ): Promise<void> {
+  log(`[nomie-sre] spawnAutoFix invoked: autoFix=${config.autoFix}, alerts=${alerts.length}, autoFixRepo=${config.autoFixRepo || "(unset)"}`);
   if (!config.autoFix || alerts.length === 0) return;
   if (autoFixRunning) {
     log("[nomie-sre] Auto-fix already running, skipping");
@@ -147,14 +150,34 @@ async function spawnAutoFix(
     return;
   }
 
-  const sentryAlerts = (alerts.filter(a => a.type === "sentry") as SentryAlert[])
-    .filter(a => a.stackTrace && !a.stackTrace.includes("node_modules"));
-  if (sentryAlerts.length === 0) return;
+  // Auto-fix should still attempt even if stackTrace is missing.
+  // We only skip errors that clearly originate in node_modules.
+  const sentryAlertsRaw = (alerts.filter(a => a.type === "sentry") as SentryAlert[]);
+  log(`[nomie-sre] spawnAutoFix: raw sentry alerts=${sentryAlertsRaw.length} firstStackTrace=${JSON.stringify(sentryAlertsRaw[0]?.stackTrace?.slice(0, 120) || null)}`);
+
+  // Skip only if the stack trace points to node_modules. We still try to fix if
+  // node_modules appears later in the trace (it often does) as long as at least
+  // one frame points to app code.
+  const sentryAlerts = sentryAlertsRaw.filter(a => {
+    if (!a.stackTrace) return true;
+    const lines = a.stackTrace.split("\n").map(l => l.trim()).filter(Boolean);
+    const hasAppFrame = lines.some(l => l.includes("/apps/") || l.includes("/src/"));
+    if (hasAppFrame) return true;
+    // Otherwise, only keep if it doesn't look like it's purely node_modules.
+    return !a.stackTrace.includes("node_modules");
+  });
+
+  log(`[nomie-sre] spawnAutoFix: eligible sentry alerts=${sentryAlerts.length}`);
+
+  if (sentryAlerts.length === 0) {
+    log("[nomie-sre] spawnAutoFix: no eligible Sentry alerts after filtering, skipping");
+    return;
+  }
 
   const branch = generateBranch(sentryAlerts[0].shortId);
   const prompt = buildFixPrompt(sentryAlerts, branch);
   const timeout = config.autoFixTimeoutSeconds || 1800;
-  const model = config.autoFixModel || "sonnet";
+  const model = config.autoFixModel || "openai-codex";
 
   const tmpFile = join(tmpdir(), `nomie-sre-autofix-${Date.now()}.txt`);
   writeFileSync(tmpFile, prompt);
@@ -170,7 +193,7 @@ async function spawnAutoFix(
 
   const proc = nodeSpawn(
     "/usr/bin/acpx",
-    ["--timeout", String(timeout), "--cwd", config.autoFixRepo, "claude", "exec", "-f", tmpFile],
+    ["--timeout", String(timeout), "--cwd", config.autoFixRepo, "codex", "exec", "-f", tmpFile],
     {
       cwd: config.autoFixRepo,
       env: { ...process.env, PATH: `/home/clawdbot/.local/bin:/home/clawdbot/.bun/bin:${process.env.PATH}` },
@@ -187,15 +210,56 @@ async function spawnAutoFix(
 
   proc.on("close", async (code: number | null) => {
     autoFixRunning = false;
+
+    const runTs = new Date().toISOString().replace(/[:.]/g, "-");
+    const safeBranch = branch.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const runId = `autofix-${safeBranch}-${runTs}`;
+
+    // Persist full output for post-mortem debugging.
+    // This is intentionally NOT written to /tmp because /tmp can be cleared/rebooted.
+    let outPath: string | null = null;
+    let errPath: string | null = null;
+    try {
+      const baseDir = join(process.env.HOME || "/home/clawdbot", ".clawdbot", "extensions", "nomie-sre", "data", "autofix-runs");
+      mkdirSync(baseDir, { recursive: true });
+      outPath = join(baseDir, `${runId}.stdout.log`);
+      errPath = join(baseDir, `${runId}.stderr.log`);
+      writeFileSync(outPath, stdout || "", "utf8");
+      writeFileSync(errPath, stderr || "", "utf8");
+    } catch (e) {
+      log(`[nomie-sre] Auto-fix: failed to persist stdout/stderr: ${String(e)}`);
+    }
+
     try { unlinkSync(tmpFile); } catch {}
 
-    log(`[nomie-sre] Auto-fix exited with code ${code}`);
+    log(`[nomie-sre] Auto-fix exited with code ${code} (runId=${runId}${errPath ? `, stderr=${errPath}` : ""})`);
 
     if (code !== 0 && code !== null) {
-      const errMsg = stderr.slice(-500) || stdout.slice(-500) || "Unknown error";
-      log(`[nomie-sre] Auto-fix failed: ${errMsg}`);
+      // Keep the Telegram message short, but make journald searchable.
+      const errTail = (stderr || stdout || "Unknown error").slice(-2000);
+      log(`[nomie-sre] Auto-fix failed (runId=${runId}). stderr tail:\n${errTail}`);
+
+      const shortErr = (stderr.slice(-500) || stdout.slice(-500) || "Unknown error");
+
+      // Telegram should include the actionable error, but avoid huge dumps.
+      // Telegram message limit is ~4096 chars; keep a safe buffer.
+      const raw = (stderr || stdout || "Unknown error");
+      const MAX_TELEGRAM_BLOCK = 3400;
+      let fullErrForTelegram = raw;
+      if (raw.length > MAX_TELEGRAM_BLOCK) {
+        const head = raw.slice(0, 1400);
+        const tail = raw.slice(-1400);
+        fullErrForTelegram = `TRUNCATED (len=${raw.length})\n--- HEAD ---\n${head}\n\n--- TAIL ---\n${tail}`;
+      }
+
+      const refs = [
+        errPath ? `stderr: ${errPath}` : null,
+        outPath ? `stdout: ${outPath}` : null,
+        `journalctl: journalctl --user -u clawdbot-gateway.service | rg "${runId}"`,
+      ].filter(Boolean).join("\n");
+
       try {
-        await sendAlert(`\u274c Auto-fix failed (exit ${code}):\n\`\`\`\n${errMsg}\n\`\`\``);
+        await sendAlert(`\u274c Auto-fix failed (exit ${code}):\n\n*Summary (tail):*\n\`\`\`\n${shortErr}\n\`\`\`\n\n*Full error:*\n\`\`\`\n${fullErrForTelegram}\n\`\`\`\n\n${refs}`);
       } catch (err) {
         log(`[nomie-sre] Failed to send auto-fix failure alert: ${err}`);
       }
@@ -266,6 +330,7 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
 
     const state = loadState();
     const allAlerts: Alert[] = [];
+    let sentryAlertsThisPoll: SentryAlert[] = [];
 
     // Check if silenced
     if (isSilenced(state)) {
@@ -275,15 +340,25 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
     // Poll Sentry
     if (config.sentryAuthToken && config.sentryOrg && config.sentryProject) {
       log("[nomie-sre] Polling Sentry...");
+      const seenCounts = getSentryCounts();
       const sentryAlerts = await pollSentry(
         config.sentryAuthToken,
         config.sentryOrg,
         config.sentryProject,
-        state.seenSentryIssues
+        state.seenSentryIssues,
+        seenCounts
       );
+      sentryAlertsThisPoll = sentryAlerts;
       allAlerts.push(...sentryAlerts);
-      addSeenSentryIssues(sentryAlerts.map((a) => a.issueId));
-      log(`[nomie-sre]   Found ${sentryAlerts.length} new issues`);
+
+      // Update counts immediately (used to decide re-alerts). We intentionally do NOT
+      // mark issues as "seen" until we successfully send an alert/digest message.
+      const newCounts: Record<string, number> = {};
+      for (const alert of sentryAlerts) {
+        newCounts[alert.issueId] = alert.count;
+      }
+      updateSentryCounts(newCounts);
+      log(`[nomie-sre]   Found ${sentryAlerts.length} new/updated issues`);
     }
 
     // Poll PostHog
@@ -358,7 +433,13 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
             
             try {
               await sendAlert(digestMsg.trim());
+
+              // Mark Sentry issues as "seen" only after we successfully send the digest.
+              const sentryIssueIds = sentryAlerts.map(a => (a as any).issueId).filter(Boolean);
+              if (sentryIssueIds.length > 0) addSeenSentryIssues(sentryIssueIds);
+
               clearPendingDigestAlerts();
+
               // Mark PostHog anomalies as alerted
               for (const alert of posthogAlerts) {
                 if (alert.type === "posthog") {
@@ -376,6 +457,12 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
         for (const alert of allAlerts) {
           try {
             await sendAlert(formatAlert(alert));
+
+            // Mark Sentry issues as "seen" only after we successfully send the alert.
+            if (alert.type === "sentry") {
+              addSeenSentryIssues([(alert as any).issueId]);
+            }
+
             // Mark PostHog anomalies as alerted so we don't re-alert today
             if (alert.type === "posthog") {
               markAnomalyAlerted(alert.metric);
@@ -391,6 +478,10 @@ export async function runPoll(deps: PollerDependencies): Promise<Alert[]> {
     log(`[nomie-sre] Poll complete. ${allAlerts.length} alerts found.`);
 
     // Trigger auto-fix for Sentry errors if enabled
+    if (allAlerts.length > 0) {
+      const sentryCount = allAlerts.filter(a => a.type === "sentry").length;
+      log(`[nomie-sre] Auto-fix check: autoFix=${config.autoFix}, alerts=${allAlerts.length}, sentryAlerts=${sentryCount}`);
+    }
     if (allAlerts.length > 0 && config.autoFix) {
       await spawnAutoFix(allAlerts, config, sendAlert, log);
     }

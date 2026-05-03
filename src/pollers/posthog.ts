@@ -23,8 +23,11 @@ export async function getDailySummary(
   projectId: string
 ): Promise<DailySummary | null> {
   const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const dateStr = now.toISOString().split("T")[0];
+  // Use yesterday's complete data instead of today's incomplete data
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+  const yesterdayStr = yesterday.toISOString().split("T")[0];
+  const dateStr = yesterdayStr; // Report on yesterday's complete data
 
   try {
     // Get DAU (using $screen for mobile apps, falls back from $pageview)
@@ -35,8 +38,8 @@ export async function getDailySummary(
           kind: "TrendsQuery",
           series: [{ kind: "EventsNode", event: "$screen", math: "dau" }],
           dateRange: {
-            date_from: sevenDaysAgo.toISOString().split("T")[0],
-            date_to: dateStr,
+            date_from: eightDaysAgo.toISOString().split("T")[0],
+            date_to: yesterdayStr,
           },
           interval: "day",
         },
@@ -50,6 +53,7 @@ export async function getDailySummary(
     );
 
     const dauResults = dauResponse.data?.results?.[0]?.data || [];
+    // Last element is now yesterday (complete day), compare to previous 7 days
     const todayDau = dauResults[dauResults.length - 1] || 0;
     const dauAvg = dauResults.length > 1
       ? dauResults.slice(0, -1).reduce((a: number, b: number) => a + b, 0) / (dauResults.length - 1)
@@ -64,8 +68,8 @@ export async function getDailySummary(
           kind: "TrendsQuery",
           series: [{ kind: "EventsNode", event: "$screen", math: "total" }],
           dateRange: {
-            date_from: sevenDaysAgo.toISOString().split("T")[0],
-            date_to: dateStr,
+            date_from: eightDaysAgo.toISOString().split("T")[0],
+            date_to: yesterdayStr,
           },
           interval: "day",
         },
@@ -98,8 +102,8 @@ export async function getDailySummary(
               kind: "TrendsQuery",
               series: [{ kind: "EventsNode", event: eventName, math: "total" }],
               dateRange: {
-                date_from: sevenDaysAgo.toISOString().split("T")[0],
-                date_to: dateStr,
+                date_from: eightDaysAgo.toISOString().split("T")[0],
+                date_to: yesterdayStr,
               },
               interval: "day",
             },
@@ -151,10 +155,13 @@ export async function pollPostHog(
 ): Promise<PostHogAlert[]> {
   const alerts: PostHogAlert[] = [];
   const now = new Date();
-  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  // Use yesterday's complete data instead of today's incomplete data
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
+  const yesterdayStr = yesterday.toISOString().split("T")[0];
 
   try {
-    // Query DAU for today vs 7-day average (using $screen for mobile)
+    // Query DAU for yesterday vs 7-day average (using $screen for mobile)
     const dauResponse = await axios.post(
       `${POSTHOG_HOST}/api/projects/${projectId}/query/`,
       {
@@ -168,8 +175,8 @@ export async function pollPostHog(
             },
           ],
           dateRange: {
-            date_from: sevenDaysAgo.toISOString().split("T")[0],
-            date_to: now.toISOString().split("T")[0],
+            date_from: eightDaysAgo.toISOString().split("T")[0],
+            date_to: yesterdayStr,
           },
           interval: "day",
         },
@@ -220,8 +227,8 @@ export async function pollPostHog(
               },
             ],
             dateRange: {
-              date_from: sevenDaysAgo.toISOString().split("T")[0],
-              date_to: now.toISOString().split("T")[0],
+              date_from: eightDaysAgo.toISOString().split("T")[0],
+              date_to: yesterdayStr,
             },
             interval: "day",
           },
