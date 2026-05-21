@@ -1,15 +1,30 @@
 import type { Alert, SentryAlert } from "./types.js";
 
+// Escape characters that would otherwise be parsed by Telegram's classic Markdown
+// (parse_mode: "Markdown"). Sentry/PostHog titles often contain `_` (e.g. USER_SPEAKING)
+// which opens an italic span the parser can't close → "can't parse entities" 400.
+function esc(text: string | undefined | null): string {
+  if (!text) return "";
+  return String(text).replace(/([_*`\[\]])/g, "\\$1");
+}
+
+// For content placed inside `inline code` or ```code blocks```, classic Markdown
+// only requires that the literal backtick chars not appear (they'd close the span).
+function escCode(text: string | undefined | null): string {
+  if (!text) return "";
+  return String(text).replace(/`/g, "'");
+}
+
 export function formatAlert(alert: Alert): string {
   switch (alert.type) {
     case "sentry": {
       // Show different header for re-alerts vs new issues
       let msg = alert.isReAlert
-        ? `🔄 *SENTRY: ${alert.shortId}* (recurring)\n`
-        : `🚨 *SENTRY: ${alert.shortId}*\n`;
-      msg += `*Error:* ${alert.title}\n`;
-      msg += `*Function:* \`${alert.function}\`\n`;
-      if (alert.errorType) msg += `*Type:* ${alert.errorType}\n`;
+        ? `🔄 *SENTRY: ${esc(alert.shortId)}* (recurring)\n`
+        : `🚨 *SENTRY: ${esc(alert.shortId)}*\n`;
+      msg += `*Error:* ${esc(alert.title)}\n`;
+      msg += `*Function:* \`${escCode(alert.function)}\`\n`;
+      if (alert.errorType) msg += `*Type:* ${esc(alert.errorType)}\n`;
       if (alert.isReAlert && alert.newEvents) {
         msg += `*New events:* +${alert.newEvents} (total: ${alert.count})\n`;
       } else {
@@ -20,28 +35,28 @@ export function formatAlert(alert: Alert): string {
           alert.stackTrace.length > 500
             ? alert.stackTrace.slice(0, 500) + "..."
             : alert.stackTrace;
-        msg += `\n\`\`\`\n${truncatedTrace}\n\`\`\`\n`;
+        msg += `\n\`\`\`\n${escCode(truncatedTrace)}\n\`\`\`\n`;
       }
       msg += `\n→ [View in Sentry](${alert.link})`;
       return msg;
     }
     case "posthog": {
       const direction = alert.changePercent > 0 ? "📈" : "📉";
-      return `${direction} *POSTHOG: ${alert.metric}*\nCurrent: ${alert.current}\n7-day avg: ${alert.baseline}\nChange: ${alert.changePercent > 0 ? "+" : ""}${alert.changePercent.toFixed(1)}%`;
+      return `${direction} *POSTHOG: ${esc(alert.metric)}*\nCurrent: ${alert.current}\n7-day avg: ${alert.baseline}\nChange: ${alert.changePercent > 0 ? "+" : ""}${alert.changePercent.toFixed(1)}%`;
     }
     case "cloudwatch": {
-      let msg = `⚠️ *CLOUDWATCH: ${alert.metric}*\n`;
-      msg += `*Resource:* \`${alert.resource}\`\n`;
+      let msg = `⚠️ *CLOUDWATCH: ${esc(alert.metric)}*\n`;
+      msg += `*Resource:* \`${escCode(alert.resource)}\`\n`;
       if (alert.timestamp) {
         const time = new Date(alert.timestamp).toLocaleTimeString('en-US', { hour12: false });
         msg += `*Time:* ${time} UTC\n`;
       }
       if (alert.details) {
         // Truncate and format error details
-        const details = alert.details.length > 300 
-          ? alert.details.slice(0, 300) + "..." 
+        const details = alert.details.length > 300
+          ? alert.details.slice(0, 300) + "..."
           : alert.details;
-        msg += `\n\`\`\`\n${details}\n\`\`\``;
+        msg += `\n\`\`\`\n${escCode(details)}\n\`\`\``;
       }
       return msg;
     }

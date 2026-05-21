@@ -23,7 +23,7 @@ import { formatAlert } from "../formatter.js";
 import axios from "axios";
 
 import { spawn as nodeSpawn, execSync } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { writeFileSync, unlinkSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,23 +52,28 @@ function generateBranch(shortId: string): string {
   return `fix/sentry-${shortId}-${ts}`;
 }
 
-// Trip if the last 3 autofix runs all failed with byte-identical, non-empty stderr.
+// Trip if 3+ autofix runs in the last hour all failed with byte-identical, non-empty stderr.
 // Catches the May-4-style scenario where the agent itself is panicking deterministically
-// and we'd otherwise burn 12 retries/hour against a broken binary.
+// and we'd otherwise burn 12 retries/hour against a broken binary. The 1h window prevents
+// the breaker from getting stuck on ancient failures after the underlying issue has resolved.
+const CIRCUIT_BREAKER_WINDOW_MS = 60 * 60 * 1000;
 function checkCircuitBreaker(): { trip: boolean; reason?: string } {
   const baseDir = join(process.env.HOME || "/home/clawdbot", ".clawdbot", "extensions", "nomie-sre", "data", "autofix-runs");
-  let files: string[];
+  const cutoff = Date.now() - CIRCUIT_BREAKER_WINDOW_MS;
+  let recent: string[];
   try {
-    files = readdirSync(baseDir)
+    recent = readdirSync(baseDir)
       .filter((f) => f.endsWith(".stderr.log"))
-      .sort()
-      .reverse()
-      .slice(0, 3);
+      .map((f) => ({ f, mtime: statSync(join(baseDir, f)).mtimeMs }))
+      .filter((x) => x.mtime >= cutoff)
+      .sort((a, b) => b.mtime - a.mtime)
+      .slice(0, 3)
+      .map((x) => x.f);
   } catch {
     return { trip: false };
   }
-  if (files.length < 3) return { trip: false };
-  const contents: (string | null)[] = files.map((f) => {
+  if (recent.length < 3) return { trip: false };
+  const contents: (string | null)[] = recent.map((f) => {
     try { return readFileSync(join(baseDir, f), "utf8"); } catch { return null; }
   });
   if (contents.some((c) => c === null)) return { trip: false };
@@ -78,7 +83,7 @@ function checkCircuitBreaker(): { trip: boolean; reason?: string } {
   if (!allIdentical) return { trip: false };
   return {
     trip: true,
-    reason: `Last 3 autofix runs failed with identical stderr: ${contents[0]!.trim().slice(0, 200)}`,
+    reason: `Last 3 autofix runs in the past hour all failed with identical stderr: ${contents[0]!.trim().slice(0, 200)}`,
   };
 }
 
