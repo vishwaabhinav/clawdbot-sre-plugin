@@ -22,8 +22,8 @@ import {
 import { formatAlert } from "../formatter.js";
 import axios from "axios";
 
-import { spawn as nodeSpawn } from "node:child_process";
-import { writeFileSync, unlinkSync, mkdirSync } from "node:fs";
+import { spawn as nodeSpawn, execSync } from "node:child_process";
+import { writeFileSync, unlinkSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -52,6 +52,36 @@ function generateBranch(shortId: string): string {
   return `fix/sentry-${shortId}-${ts}`;
 }
 
+// Trip if the last 3 autofix runs all failed with byte-identical, non-empty stderr.
+// Catches the May-4-style scenario where the agent itself is panicking deterministically
+// and we'd otherwise burn 12 retries/hour against a broken binary.
+function checkCircuitBreaker(): { trip: boolean; reason?: string } {
+  const baseDir = join(process.env.HOME || "/home/clawdbot", ".clawdbot", "extensions", "nomie-sre", "data", "autofix-runs");
+  let files: string[];
+  try {
+    files = readdirSync(baseDir)
+      .filter((f) => f.endsWith(".stderr.log"))
+      .sort()
+      .reverse()
+      .slice(0, 3);
+  } catch {
+    return { trip: false };
+  }
+  if (files.length < 3) return { trip: false };
+  const contents: (string | null)[] = files.map((f) => {
+    try { return readFileSync(join(baseDir, f), "utf8"); } catch { return null; }
+  });
+  if (contents.some((c) => c === null)) return { trip: false };
+  const allNonEmpty = contents.every((c) => c !== null && c.trim().length > 0);
+  if (!allNonEmpty) return { trip: false };
+  const allIdentical = contents.every((c) => c === contents[0]);
+  if (!allIdentical) return { trip: false };
+  return {
+    trip: true,
+    reason: `Last 3 autofix runs failed with identical stderr: ${contents[0]!.trim().slice(0, 200)}`,
+  };
+}
+
 function buildFixPrompt(alerts: SentryAlert[], branch: string): string {
   const errorDetails = alerts.map((a, i) => `ERROR ${i + 1}:
 - Sentry ID: ${a.shortId}
@@ -68,17 +98,14 @@ ${a.stackTrace ? `\nSTACK TRACE:\n${a.stackTrace}` : ""}`).join("\n\n");
 ${errorDetails}
 
 INSTRUCTIONS:
-1. Ensure you are on a clean main branch:
-   git checkout main && git pull origin main
-2. Read the relevant files to understand the error context
-3. Identify the root cause of each error
-4. Create and checkout a new branch from main:
-   git checkout -b ${branch}
-5. Implement minimal fixes (fix only what is broken, do not refactor)
-6. Add or update tests if appropriate
-7. Commit with a message starting with "fix: "
-8. Push the branch to origin
-9. Create a PR to main using: gh pr create --title "fix: <brief description>" --body "Auto-fix for Sentry errors: ${alerts.map(a => a.shortId).join(", ")}"
+You are already checked out on a fresh branch (${branch}) cut from origin's default branch. Do NOT run "git checkout main", "git pull", or "git checkout -b" — that work is already done.
+1. Read the relevant files to understand the error context
+2. Identify the root cause of each error
+3. Implement minimal fixes (fix only what is broken, do not refactor)
+4. Add or update tests if appropriate
+5. Commit with a message starting with "fix: "
+6. Push the branch to origin
+7. Create a PR using: gh pr create --title "fix: <brief description>" --body "Auto-fix for Sentry errors: ${alerts.map(a => a.shortId).join(", ")}"
 
 IMPORTANT:
 - Skip errors in node_modules/ or native code — just note them
@@ -174,7 +201,56 @@ async function spawnAutoFix(
     return;
   }
 
+  // Circuit breaker: if the last 3 runs all failed identically, the agent is broken
+  // (deterministic panic state). Stop spawning until someone investigates.
+  const cb = checkCircuitBreaker();
+  if (cb.trip) {
+    log(`[nomie-sre] Auto-fix circuit breaker tripped: ${cb.reason}`);
+    try {
+      await sendAlert(`\ud83d\uded1 Auto-fix circuit breaker tripped \u2014 skipping new runs.\n\n${cb.reason}\n\nManual investigation needed; delete recent stderr logs in data/autofix-runs/ to re-arm.`);
+    } catch (err) {
+      log(`[nomie-sre] Failed to send circuit breaker alert: ${err}`);
+    }
+    return;
+  }
+
   const branch = generateBranch(sentryAlerts[0].shortId);
+
+  // Deterministic git prep \u2014 don't trust the agent to checkout main / branch correctly.
+  // Refuse to touch a dirty tree rather than risk destroying uncommitted work.
+  try {
+    const git = (cmd: string): string =>
+      execSync(cmd, { cwd: config.autoFixRepo, stdio: ["ignore", "pipe", "pipe"] }).toString();
+
+    const dirty = git("git status --porcelain").trim();
+    if (dirty) {
+      log(`[nomie-sre] Auto-fix aborted: working tree dirty in ${config.autoFixRepo}`);
+      try {
+        await sendAlert(`\u26a0\ufe0f Auto-fix aborted: ${config.autoFixRepo} has uncommitted changes \u2014 refusing to auto-stash or reset.\n\`\`\`\n${dirty.slice(0, 500)}\n\`\`\``);
+      } catch (err) {
+        log(`[nomie-sre] Failed to send dirty-tree alert: ${err}`);
+      }
+      return;
+    }
+
+    const defaultBranch = git("git symbolic-ref --short refs/remotes/origin/HEAD")
+      .trim()
+      .replace(/^origin\//, "");
+
+    git("git fetch origin --prune");
+    git(`git checkout ${defaultBranch}`);
+    // Safe: dirty check passed above, so there's nothing to lose.
+    git(`git reset --hard origin/${defaultBranch}`);
+    git(`git checkout -b ${branch}`);
+    log(`[nomie-sre] Git prep ok: on branch ${branch} from origin/${defaultBranch}`);
+  } catch (err: any) {
+    log(`[nomie-sre] Git prep failed: ${err?.message || err}`);
+    try {
+      await sendAlert(`\u274c Auto-fix git prep failed: ${err?.message || err}`);
+    } catch {}
+    return;
+  }
+
   const prompt = buildFixPrompt(sentryAlerts, branch);
   const timeout = config.autoFixTimeoutSeconds || 1800;
   const model = config.autoFixModel || "openai-codex";
@@ -198,7 +274,6 @@ async function spawnAutoFix(
       cwd: config.autoFixRepo,
       env: { ...process.env, PATH: `/home/clawdbot/.local/bin:/home/clawdbot/.bun/bin:${process.env.PATH}` },
       stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
     }
   );
 
@@ -297,8 +372,6 @@ async function spawnAutoFix(
       log(`[nomie-sre] Failed to send spawn error alert: ${alertErr}`);
     }
   });
-
-  proc.unref();
 }
 
 
